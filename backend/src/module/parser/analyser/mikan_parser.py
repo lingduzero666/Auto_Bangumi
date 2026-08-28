@@ -1,6 +1,8 @@
+import datetime
 import logging
 import re
 from collections import OrderedDict
+from dataclasses import dataclass
 
 from bs4 import BeautifulSoup
 from urllib3.util import parse_url
@@ -10,10 +12,30 @@ from module.utils import save_image
 
 logger = logging.getLogger(__name__)
 
+# Mikan 服务端按 en-US 输出日期，格式是 M/D/YYYY（如「放送开始：4/3/2026」
+# 表示 2026 年 4 月 3 日）。不绑定具体 CSS 选择器，直接在页面纯文本上匹配，
+# 这样 Mikan 调整标记结构时也不会失效。
+_AIR_DATE = re.compile(r"放送开始[：:]\s*(\d{1,2})/(\d{1,2})/(\d{4})")
+
 # In-memory cache for Mikan homepage lookups. Keyed by per-episode homepage
 # URL, so it is bounded (LRU-ish, oldest-evicted) rather than unlimited.
 _MIKAN_CACHE_MAX = 512
-_mikan_cache: "OrderedDict[str, tuple[str, str]]" = OrderedDict()
+
+
+@dataclass(frozen=True, slots=True)
+class MikanInfo:
+    """Mikan 剧集主页上可用的番剧信息。
+
+    ``air_date`` 是可选增强：页面没有「放送开始」行、或日期非法时为 None，
+    调用方据此决定是否降级（见 mix_parser）。
+    """
+
+    poster_link: str
+    official_title: str
+    air_date: datetime.date | None = None
+
+
+_mikan_cache: "OrderedDict[str, MikanInfo]" = OrderedDict()
 
 
 def reset_cache() -> None:
@@ -22,14 +44,32 @@ def reset_cache() -> None:
     _mikan_cache.clear()
 
 
-def _cache_result(homepage: str, result: tuple[str, str]) -> tuple[str, str]:
+def _cache_result(homepage: str, result: MikanInfo) -> MikanInfo:
     if len(_mikan_cache) >= _MIKAN_CACHE_MAX:
         _mikan_cache.popitem(last=False)
     _mikan_cache[homepage] = result
     return result
 
 
-async def mikan_parser(homepage: str):
+def _parse_air_date(text: str) -> datetime.date | None:
+    """从页面文本里取「放送开始」日期，取不到返回 None。
+
+    与下面海报/标题的解析不同，这里**绝不抛异常**：日期只是可选增强，而
+    调用方的 ``except AttributeError`` 语义是「页面结构变了」，不该被一个
+    缺失的日期触发。
+    """
+    match = _AIR_DATE.search(text)
+    if match is None:
+        return None
+    month, day, year = (int(group) for group in match.groups())
+    try:
+        return datetime.date(year, month, day)
+    except ValueError:
+        logger.debug("Ignoring invalid Mikan air date: %s", match.group())
+        return None
+
+
+async def mikan_parser(homepage: str) -> MikanInfo:
     if homepage in _mikan_cache:
         return _mikan_cache[homepage]
     root_path = parse_url(homepage).host
@@ -49,6 +89,7 @@ async def mikan_parser(homepage: str):
             'p.bangumi-title a[href^="/Home/Bangumi/"]'
         ).text  # type: ignore[union-attr]
         official_title = re.sub(r"第.*季", "", official_title).strip()
+        air_date = _parse_air_date(soup.get_text())
         if poster_div:
             # bs4's Tag.get() return type also covers multi-valued attrs
             # (AttributeValueList); "style" is never multi-valued in practice.
@@ -63,8 +104,10 @@ async def mikan_parser(homepage: str):
                 if img
                 else ""
             )
-            return _cache_result(homepage, (poster_link, official_title))
-        return _cache_result(homepage, ("", official_title))
+            return _cache_result(
+                homepage, MikanInfo(poster_link, official_title, air_date)
+            )
+        return _cache_result(homepage, MikanInfo("", official_title, air_date))
 
 
 if __name__ == "__main__":

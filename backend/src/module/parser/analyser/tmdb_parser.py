@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import re
 import time
@@ -23,6 +24,17 @@ def _api_key() -> str:
     # 用户自配 key 优先（#975）；留空回退到内置共享 key。同样读实时值
     return settings.network.tmdb_api_key or TMDB_API
 
+
+# 传入 air_date 时用于「选番」的窗口（天）。放得宽是必须的：分割放送
+# （split-cour）在 TMDB 上是**一个** season，seasons[].air_date 只记第一
+# cour 的日期，而 Mikan 会把第二 cour 列成独立条目（放送开始晚约半年）。
+# 选出番之后再用集级 air_date 精确定季，见 _match_season_by_episodes()。
+_CANDIDATE_WINDOW_DAYS = 200
+
+# 传入 air_date 时最多检查多少个搜索候选。TMDB 搜索结果按相关度排序，
+# 第 5 名之后基本是噪声；每个候选都要一次详情请求，不设上限会在自建
+# tmdb_base_url 镜像上打满连接池并触发限流。
+_AIR_DATE_MAX_CANDIDATES = 5
 
 # In-memory cache for TMDB lookups to avoid repeated API calls
 _TMDB_CACHE_MAX = 512
@@ -49,6 +61,11 @@ class TMDBInfo:
     virtual_season_starts: dict[int, list[int]] | None = (
         None  # {1: [1, 29], ...} - episode numbers where virtual seasons start
     )
+    # 传入 air_date 时匹配到的季号。**不要用 last_season 承载它**：
+    # last_season 的语义是「TMDB 上一共有几季」，offset_detector 拿它做
+    # `parsed_season > last_season` 的越界判断、文案也写着「TMDB只有N季」，
+    # 覆盖成匹配季号会让合法的 S2 订阅误报 offset 建议。
+    matched_season: int | None = None
 
     def get_offset_for_season(self, season: int) -> int:
         """Calculate offset for a season (negative sum of all previous seasons' episodes).
@@ -98,14 +115,24 @@ def season_url(tv_id, season_number, key):
     return f"{_tmdb_url()}/3/tv/{tv_id}/season/{season_number}?api_key={_api_key()}&language={LANGUAGE[key]}"
 
 
+async def _fetch_tv_info(tv_id, language, req: RequestContent) -> dict | None:
+    """拉一次剧集详情。失败时 get_json 返回 None（不抛异常）。
+
+    详情里同时含 genres（判断是否动画）和 seasons（选季要用），拉一次复用，
+    避免既有代码「is_animation 拉了详情只看 genres 就丢掉、命中后再拉一次
+    同一个 URL」的重复请求。
+    """
+    return await req.get_json(info_url(tv_id, language))
+
+
+def _is_animation_info(info: dict | None) -> bool:
+    if not info:
+        return False
+    return any(genre.get("id") == 16 for genre in info.get("genres", []))
+
+
 async def is_animation(tv_id, language, req: RequestContent) -> bool:
-    url_info = info_url(tv_id, language)
-    type_id = await req.get_json(url_info)
-    if type_id:
-        for type in type_id.get("genres", []):
-            if type.get("id") == 16:
-                return True
-    return False
+    return _is_animation_info(await _fetch_tv_info(tv_id, language, req))
 
 
 async def get_season_episode_air_dates(
@@ -237,13 +264,156 @@ def get_season(seasons: list) -> tuple[int, str | None]:
     return len(ss), ss[-1].get("poster_path")
 
 
+# TMDB 上 specials 在第 0 季，但 OVA / 剧场版合集常常挂在非 0 季号上，只能
+# 再按名字排除。这是 get_season() 第 251 行「特别」过滤的超集，保证本模块
+# 新旧两套季选择器的口径不会打架。
+_SPECIAL_SEASON_NAME = re.compile(r"特别|特別|specials?|ova|oad", re.I)
+
+
+def _parse_tmdb_date(value: str | None) -> datetime.date | None:
+    """TMDB 的日期字段可能是 null，也可能是空串，两种都要挡住。"""
+    if not value:
+        return None
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _is_regular_season(season: dict) -> bool:
+    """正片季判定。
+
+    ``season_number`` 缺失时 ``.get(...) == 0`` 为 False，会把 specials 当
+    正片，所以用 ``or 0`` 兜底再比较。
+    """
+    if (season.get("season_number") or 0) <= 0:
+        return False
+    return _SPECIAL_SEASON_NAME.search(season.get("name") or "") is None
+
+
+def _closest_season(
+    info: dict, target: datetime.date
+) -> tuple[int, int, str | None] | None:
+    """返回该候选里离 target 最近的正片季 ``(相差天数, 季号, 海报路径)``。
+
+    没有任何可比日期时返回 None——这既不是「超出窗口」也不是「不是动画」，
+    调用方必须把它当作「无法判断」而不是「不匹配」，否则最需要日期匹配的
+    新番（TMDB 尚未录入放送日期）反而最容易被判为未匹配。
+    """
+    best: tuple[int, int, str | None] | None = None
+    for season in info.get("seasons") or []:
+        if not _is_regular_season(season):
+            continue
+        air = _parse_tmdb_date(season.get("air_date"))
+        if air is None:
+            continue
+        candidate = (
+            abs((air - target).days),
+            int(season["season_number"]),
+            season.get("poster_path"),
+        )
+        # 相差天数相同时取较小季号，保证结果可复现
+        if best is None or candidate[:2] < best[:2]:
+            best = candidate
+    return best
+
+
+def _season_from_episode_dates(
+    season_nums: list[tuple[int, int]],
+    episode_results: list,
+    target: datetime.date,
+) -> int | None:
+    """用集级 air_date 定季：找离 target 最近的一集，返回它所属的季号。
+
+    这才是分割放送的正解——TMDB 把「一季两 cour、中间隔半年」建模成一个
+    season，季级 air_date 只记第一 cour 的日期，只有集级日期才落在正确的
+    cour 上。数据来自调用方本来就要拉的 get_season_episode_air_dates()，
+    不产生额外请求。
+    """
+    best: tuple[int, int] | None = None
+    for (season_num, _), episodes in zip(season_nums, episode_results):
+        if isinstance(episodes, BaseException) or not episodes:
+            continue
+        for episode in episodes:
+            candidate = (abs((episode["air_date"] - target).days), season_num)
+            if best is None or candidate < best:
+                best = candidate
+    return best[1] if best is not None else None
+
+
+async def _select_by_air_date(
+    contents: list,
+    language,
+    req: RequestContent,
+    air_date: datetime.date,
+) -> tuple[int | None, dict | None, int | None, str | None]:
+    """阶段一：在搜索候选里按季级放送日期选出正确的那部番。
+
+    返回 ``(matched_id, 详情 json, 季号, 海报路径)``。三种失败状态必须区分：
+
+    - 一个动画候选都没有 → ``(None, None, None, None)``，调用方回退 search/movie
+    - 有动画候选但全部超出窗口 → ``(None, 非 None, None, None)``，调用方据此
+      判定「TMDB 上没有这部番」
+    - 有动画候选但没有任何可比日期（新番未定档）→ 退回旧行为，返回首个动画
+    """
+    fallback_id: int | None = None
+    fallback_info: dict | None = None
+    best: tuple[int, int, int, str | None] | None = None
+    best_id: int | None = None
+    best_info: dict | None = None
+    candidates = contents[:_AIR_DATE_MAX_CANDIDATES]
+    if len(contents) > len(candidates):
+        logger.debug(
+            "Air-date matching only checks the first %s of %s TMDB candidates",
+            len(candidates),
+            len(contents),
+        )
+    for index, content in enumerate(candidates):
+        cid = content["id"]
+        info = await _fetch_tv_info(cid, language, req)
+        if info is None or not _is_animation_info(info):
+            continue
+        if fallback_id is None:
+            fallback_id, fallback_info = cid, info
+        closest = _closest_season(info, air_date)
+        if closest is None:
+            continue
+        delta, season_number, poster_path = closest
+        # 相差天数相同时按搜索结果下标，保留 TMDB 的相关度顺序
+        candidate = (delta, index, season_number, poster_path)
+        if best is None or candidate[:3] < best[:3]:
+            best, best_id, best_info = candidate, cid, info
+    if fallback_id is None:
+        return None, None, None, None
+    if best is None:
+        # TMDB 一个放送日期都没录（常见于刚定档的新番）：无从判断，退回旧行为
+        logger.debug("No comparable TMDB air dates; falling back to first animation")
+        return fallback_id, fallback_info, None, None
+    if best[0] > _CANDIDATE_WINDOW_DAYS:
+        logger.debug(
+            "Closest TMDB season is %s days from %s; treating as no match",
+            best[0],
+            air_date,
+        )
+        return None, fallback_info, None, None
+    return best_id, best_info, best[2], best[3]
+
+
 async def _search_movie(
-    title: str, language: str, req: RequestContent
+    title: str,
+    language: str,
+    req: RequestContent,
+    air_date: datetime.date | None = None,
 ) -> TMDBInfo | None:
     """在 search/movie 端点查询电影/剧场版。
 
     电影没有季度概念，因此不复用剧集的季度/集数聚合逻辑，仅返回标题、原名、
-    年份与海报等基本信息。"""
+    年份与海报等基本信息。
+
+    ``air_date`` 只用于在多个候选里**排序**，绝不用于过滤：Mikan 上剧场版的
+    「放送开始」多半是资源发布日，而 TMDB 的 release_date 是院线上映日，两者
+    常差几个月到一两年。硬过滤会把正确的电影滤掉，比原本的 results[0] 更差。
+    """
     url = search_movie_url(title, language)
     contents = await req.get_json(url)
     results = (contents or {}).get("results") or []
@@ -253,7 +423,17 @@ async def _search_movie(
         results = (contents or {}).get("results") or []
     if not results:
         return None
+    # 去空格重试会重新赋值 results，所以日期排序必须放在重试之后
     movie = results[0]
+    if air_date is not None:
+        dated = [
+            (abs((released - air_date).days), index, candidate)
+            for index, candidate in enumerate(results)
+            if (released := _parse_tmdb_date(candidate.get("release_date"))) is not None
+        ]
+        if dated:
+            # 相差天数相同时按搜索结果下标，保留 TMDB 的相关度顺序
+            movie = min(dated, key=lambda item: item[:2])[2]
     year_number = (movie.get("release_date") or "").split("-")[0]
     poster_path = movie.get("poster_path")
     return TMDBInfo(
@@ -273,57 +453,92 @@ async def _search_movie(
 
 
 async def tmdb_parser(
-    title, language, test: bool = False, is_movie: bool = False
+    title,
+    language,
+    test: bool = False,
+    is_movie: bool = False,
+    air_date: datetime.date | None = None,
 ) -> TMDBInfo | None:
+    """按标题查询 TMDB。
+
+    ``air_date`` 为番剧的放送开始日期（由 mix 解析器从 Mikan 主页取得）。
+    传入时会用它在多个动画候选里挑出正确的那部并定位到具体季度，否则维持
+    「取第一个动画」的既有行为。
+    """
     # `test` must be part of the key: test mode returns the raw remote poster
     # URL instead of a locally-saved one, so mixing the two would poison
     # whichever caller queries second.
+    # air_date 同理：带日期与不带日期的查询结果不同，共用键会互相污染。
+    # Mikan 的放送开始是番剧级的稳定值（一个主页一个），不是逐种子的日期，
+    # 不会把 512 条的 LRU 撑爆。
     cache_key = f"{title}:{language}:{test}:{is_movie}"
+    if air_date is not None:
+        cache_key = f"{cache_key}:{air_date.isoformat()}"
     if cache_key in _tmdb_cache:
         return _tmdb_cache[cache_key]
 
     async with RequestContent() as req:
         if is_movie:
             # 已知是电影/剧场版，直接查询 search/movie，跳过剧集搜索
-            result = await _search_movie(title, language, req)
+            result = await _search_movie(title, language, req, air_date)
             _tmdb_cache[cache_key] = result
             return result
         url = search_url(title, language)
         contents = await req.get_json(url)
         if not contents:
-            return await _search_movie(title, language, req)
+            return await _search_movie(title, language, req, air_date)
         contents = (contents or {}).get("results") or []
         if not contents:
             url = search_url(title.replace(" ", ""), language)
             contents_resp = await req.get_json(url)
             if not contents_resp:
-                return await _search_movie(title, language, req)
+                return await _search_movie(title, language, req, air_date)
             contents = (contents_resp or {}).get("results") or []
             if not contents:
                 # search/tv 无结果：回退到 search/movie (剧场版等)
-                return await _search_movie(title, language, req)
+                return await _search_movie(title, language, req, air_date)
         # 判断动画
         if contents:
             matched_id = None
-            for content in contents:
-                cid = content["id"]
-                if await is_animation(cid, language, req):
-                    matched_id = cid
-                    break
+            info_content = None
+            air_date_season: int | None = None
+            air_date_poster: str | None = None
+            if air_date is None:
+                for content in contents:
+                    cid = content["id"]
+                    info = await _fetch_tv_info(cid, language, req)
+                    if _is_animation_info(info):
+                        matched_id = cid
+                        info_content = info
+                        break
+            else:
+                matched_id, info_content, air_date_season, air_date_poster = (
+                    await _select_by_air_date(contents, language, req, air_date)
+                )
+                if matched_id is None and info_content is not None:
+                    # 有动画候选但全部超出选番窗口：视为 TMDB 上没有这部番。
+                    # 不再回退 search/movie —— 调用方（mix）会退回 Mikan 的
+                    # 官方名与海报。同样不缓存这个否定结果。
+                    return None
             if matched_id is None:
                 # search/tv 有结果但都不是动画：回退到 search/movie (剧场版等)。
                 # Don't cache the negative result permanently — a temporary
                 # TMDB hiccup shouldn't poison this title for the process lifetime.
-                return await _search_movie(title, language, req)
-            url_info = info_url(matched_id, language)
-            info_content = await req.get_json(url_info)
+                return await _search_movie(title, language, req, air_date)
+            if not info_content:
+                # matched_id 只在详情已确认是动画时才被赋值，所以这里进不来；
+                # 保留分支是给 mypy 收窄 dict | None。
+                return None
             season = [
                 {
                     "season": s.get("name"),
                     "air_date": s.get("air_date"),
                     "poster_path": s.get("poster_path"),
+                    # 原本丢掉了季号，导致 get_season() 只能靠中文正则
+                    # 「第 N 季」回推。get_season() 不读这个 key，加它是安全的。
+                    "season_number": s.get("season_number"),
                 }
-                for s in info_content.get("seasons")
+                for s in info_content.get("seasons") or []
             ]
             last_season, poster_path = get_season(season)
             # Extract series status (e.g., "Ended", "Returning Series")
@@ -367,10 +582,32 @@ async def tmdb_parser(
                     season_episode_counts[season_num] = len(episodes)
                 else:
                     season_episode_counts[season_num] = total_eps
+            matched_season = air_date_season
+            if air_date is not None:
+                # 阶段二：用刚拉到的集级 air_date 精确定季。季级日期对分割放送
+                # 是错的（TMDB 把两个 cour 合成一季，只记第一 cour 的日期），
+                # 集级日期才落在正确的 cour 上。拿不到集级日期时沿用阶段一。
+                matched_season = (
+                    _season_from_episode_dates(season_nums, episode_results, air_date)
+                    or air_date_season
+                )
+                if matched_season is not None and matched_season != air_date_season:
+                    air_date_poster = next(
+                        (
+                            s.get("poster_path")
+                            for s in season
+                            if s.get("season_number") == matched_season
+                        ),
+                        air_date_poster,
+                    )
+                if air_date_poster:
+                    poster_path = air_date_poster
             if poster_path is None:
                 poster_path = info_content.get("poster_path")
-            original_title = info_content.get("original_name")
-            official_title = info_content.get("name")
+            # 与 _search_movie 一致地回退到查询词：TMDBInfo 的这两个字段声明
+            # 为 str，之前靠 req 是 Any 才没暴露出可能传 None
+            original_title = info_content.get("original_name") or title
+            official_title = info_content.get("name") or title
             year_number = (info_content.get("first_air_date") or "").split("-")[0]
             if poster_path:
                 if not test:
@@ -399,6 +636,7 @@ async def tmdb_parser(
                 virtual_season_starts=(
                     virtual_season_starts if virtual_season_starts else None
                 ),
+                matched_season=matched_season,
             )
             if len(_tmdb_cache) >= _TMDB_CACHE_MAX:
                 _tmdb_cache.popitem(last=False)

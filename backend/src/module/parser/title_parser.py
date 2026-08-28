@@ -12,6 +12,7 @@ from module.parser.analyser import (
     tmdb_parser,
     torrent_parser,
 )
+from module.parser.analyser.mikan_parser import MikanInfo
 from module.parser.analyser.providers.base import AuthExpiredError
 from module.parser.analyser.providers.credentials import auth_generation
 from module.parser.analyser.selector import parse_configured_release_title_with_trace
@@ -524,5 +525,5 @@ class TitleParser:
             return None
 
     @staticmethod
-    async def mikan_parser(homepage: str) -> tuple[str, str]:
+    async def mikan_parser(homepage: str) -> MikanInfo:
         return await mikan_parser(homepage)
