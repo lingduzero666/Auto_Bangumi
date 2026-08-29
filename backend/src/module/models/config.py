@@ -69,6 +69,20 @@ class BangumiManage(BaseModel):
     enable: bool = Field(default=True, description="Enable bangumi manage")
     eps_complete: bool = Field(default=False, description="Enable eps complete")
     rename_method: str = Field(default="pn", description="Rename method")
+    # rename_method == "template" 时启用。留空则回退到 pn 的行为。
+    # 刻意不进 ENV_TO_ATTR：AB_METHOD 的 lambda 会 .lower()，会压坏模板里的
+    # 大小写；模板本身也不适合走环境变量。
+    # 默认值与 manager/rename_template.py 的 DEFAULT_* 常量必须一致
+    # （test_rename_template.py 有等值断言）。这里写字面量而不是 import：
+    # module.manager.__init__ 会拉起 renamer → module.conf → 本模块，成环。
+    rename_template: str = Field(
+        default="{{title}} S{{season}}E{{episode}}",
+        description="Custom episode filename template",
+    )
+    movie_rename_template: str = Field(
+        default="{{title}}",
+        description="Custom movie filename template",
+    )
     group_tag: bool = Field(default=False, description="Enable group tag")
     remove_bad_torrent: bool = Field(default=False, description="Remove bad torrent")
     revision_conflict_policy: Literal["hold", "replace"] = Field(

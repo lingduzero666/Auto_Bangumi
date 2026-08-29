@@ -788,3 +788,98 @@ class TestListLLMModels:
         assert response.status_code == 502
         assert "boom" not in response.text
         parser.aclose.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# POST /config/rename/preview
+# ---------------------------------------------------------------------------
+
+
+class TestRenamePreview:
+    """命名示例预览。
+
+    它必须调用与重命名管线完全同一套 build_fields / render_template，否则
+    预览会对用户说谎。这里断言的是最终字符串，等于把这条一致性钉住。
+    """
+
+    _URL = "/api/v1/config/rename/preview"
+
+    def test_default_template_previews_the_pn_layout(self, authed_client):
+        response = authed_client.post(
+            self._URL,
+            json={
+                "template": "{{title}} S{{season}}E{{episode}}",
+                "movie_template": "{{title}}",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["episode"] == "刀剑神域 S02E05.mkv"
+        assert body["movie"] == "游戏人生 零.mkv"
+        assert body["error"] == ""
+
+    def test_half_episode_and_subtitle_samples(self, authed_client):
+        response = authed_client.post(
+            self._URL, json={"template": "{{title}} S{{season}}E{{episode}}"}
+        )
+        body = response.json()
+        # 总集篇等半集保留小数 (#667)
+        assert body["half_episode"] == "刀剑神域 S02E12.5.mkv"
+        # 字幕的语言段固定插在扩展名之前
+        assert body["subtitle"] == "刀剑神域 S02E05.zh-tw.ass"
+
+    def test_all_variables_render(self, authed_client):
+        response = authed_client.post(
+            self._URL,
+            json={
+                "template": (
+                    "[{{group}}] {{bangumi_name}} S{{season}}E{{episode}} "
+                    "[{{resolution}}][{{source}}][{{subtitle}}][{{year}}]"
+                )
+            },
+        )
+        assert response.json()["episode"] == (
+            "[Lilith-Raws] 刀剑神域 (2012) S02E05 [1080p][Baha][CHT][2012].mkv"
+        )
+
+    def test_validation_error_comes_back_as_200(self, authed_client):
+        """半截输入不该弹网络错误——校验结果放响应体里。"""
+        response = authed_client.post(
+            self._URL, json={"template": "{{title}}/{{episode}}"}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert "路径分隔符" in body["error"]
+        assert body["episode"] == ""
+
+    def test_missing_episode_variable_is_rejected(self, authed_client):
+        response = authed_client.post(self._URL, json={"template": "{{title}}"})
+        body = response.json()
+        assert "episode" in body["error"]
+        assert body["episode"] == ""
+
+    def test_movie_template_does_not_require_episode(self, authed_client):
+        response = authed_client.post(
+            self._URL,
+            json={"template": "{{title}} E{{episode}}", "movie_template": "{{title}}"},
+        )
+        body = response.json()
+        assert body["movie_error"] == ""
+        assert body["movie"] == "游戏人生 零.mkv"
+
+    def test_empty_template_yields_empty_preview_without_error(self, authed_client):
+        response = authed_client.post(self._URL, json={"template": ""})
+        body = response.json()
+        assert body == {
+            "episode": "",
+            "half_episode": "",
+            "subtitle": "",
+            "movie": "",
+            "error": "",
+            "movie_error": "",
+        }
+
+    @patch("module.security.api.DEV_AUTH_BYPASS", False)
+    def test_requires_auth(self, unauthed_client):
+        response = unauthed_client.post(self._URL, json={"template": "{{episode}}"})
+        assert response.status_code == 401

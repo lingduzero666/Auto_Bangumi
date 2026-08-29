@@ -7,9 +7,18 @@ export type RssParserLang = ['zh', 'en', 'jp'];
 /** RSS 标题解析引擎（tokenizer 仍处于 Preview） */
 export type RssParserEngine = ['classic', 'tokenizer'];
 /** 重命名方式 */
-export type RenameMethod = ['normal', 'pn', 'advance', 'none'];
+export type RenameMethod = ['normal', 'pn', 'advance', 'none', 'template'];
 /** 修订版文件名冲突处理策略 */
 export type RevisionConflictPolicy = ['hold', 'replace'];
+/** 命名模板的示例渲染结果，由 POST /config/rename/preview 返回 */
+export interface RenamePreview {
+  episode: string;
+  half_episode: string;
+  subtitle: string;
+  movie: string;
+  error: string;
+  movie_error: string;
+}
 /** 代理类型 */
 export type ProxyType = ['http', 'https', 'socks5'];
 /** 通知类型 */
@@ -62,6 +71,10 @@ export interface BangumiManage {
   enable: boolean;
   eps_complete: boolean;
   rename_method: TupleToUnion<RenameMethod>;
+  /** rename_method 为 template 时生效的剧集文件名模板 */
+  rename_template: string;
+  /** 同上，剧场版专用 */
+  movie_rename_template: string;
   revision_conflict_policy: TupleToUnion<RevisionConflictPolicy>;
   group_tag: boolean;
   remove_bad_torrent: boolean;
@@ -203,6 +216,8 @@ export const initConfig: Config = {
     enable: true,
     eps_complete: true,
     rename_method: 'normal',
+    rename_template: '{{title}} S{{season}}E{{episode}}',
+    movie_rename_template: '{{title}}',
     revision_conflict_policy: 'hold',
     group_tag: true,
     remove_bad_torrent: true,

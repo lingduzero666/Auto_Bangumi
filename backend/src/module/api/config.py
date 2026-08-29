@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -222,3 +223,120 @@ async def list_llm_models(req: LLMModelsRequest):
     finally:
         await parser.aclose()
     return LLMModelsResponse(models=models)
+
+
+class RenamePreviewRequest(BaseModel):
+    template: str = ""
+    movie_template: str = ""
+
+
+class RenamePreviewResponse(BaseModel):
+    episode: str = ""
+    half_episode: str = ""
+    subtitle: str = ""
+    movie: str = ""
+    error: str = ""
+    movie_error: str = ""
+
+
+class _PreviewSample(NamedTuple):
+    """预览用的番剧样本。
+
+    刻意硬编码：首次安装时库里一条番剧都没有；而且模板要用的 title/suffix 来自
+    **文件名**解析结果，Bangumi 行里根本没有文件名——所谓"真实数据"也只有一半
+    是真的。回显真实记录还会绕过 /config/get 的敏感字段掩码（rss_link 里可能
+    带 passkey）。响应体只回渲染后的文件名字符串。
+    """
+
+    title: str
+    bangumi_name: str
+    season: int
+    year: str
+    group: str = "Lilith-Raws"
+    resolution: str = "1080p"
+    source: str = "Baha"
+    subtitle: str = "CHT"
+
+
+# 用第二季做样本，季号补零才看得出来
+_EPISODE_SAMPLE = _PreviewSample(
+    title="刀剑神域",
+    bangumi_name="刀剑神域 (2012)",
+    season=2,
+    year="2012",
+)
+_MOVIE_SAMPLE = _PreviewSample(
+    title="游戏人生 零",
+    bangumi_name="游戏人生 零 (2017)",
+    season=1,
+    year="2017",
+    source="BD",
+)
+
+
+@router.post(
+    "/rename/preview",
+    response_model=RenamePreviewResponse,
+    dependencies=[Depends(get_current_user)],
+)
+async def preview_rename_template(req: RenamePreviewRequest):
+    """按模板渲染一组示例文件名，供设置页实时预览。
+
+    校验错误放在 200 响应体里而不是 4xx：用户每敲一个字符都会触发一次预览，
+    半截的 ``{{sea`` 不该让界面弹网络错误。
+
+    渲染走的是重命名管线同一套 ``build_fields`` / ``render_template``，所以
+    预览不会对用户说谎。
+    """
+    from module.manager.rename_template import (
+        build_fields,
+        render_template,
+        validate_template,
+    )
+
+    def _render(
+        template: str,
+        sample: _PreviewSample,
+        *,
+        episode: int | float,
+        suffix: str,
+        language: str = "",
+    ) -> str:
+        fields = build_fields(
+            title=sample.title,
+            bangumi_name=sample.bangumi_name,
+            season=sample.season,
+            episode=episode,
+            group=sample.group,
+            year=sample.year,
+            resolution=sample.resolution,
+            source=sample.source,
+            subtitle=sample.subtitle,
+            language=language,
+        )
+        return render_template(template, fields, suffix=suffix)
+
+    error = validate_template(req.template, require_episode=True) or ""
+    movie_error = validate_template(req.movie_template) or ""
+    response = RenamePreviewResponse(error=error, movie_error=movie_error)
+    if not error and req.template.strip():
+        response.episode = _render(
+            req.template, _EPISODE_SAMPLE, episode=5, suffix=".mkv"
+        )
+        # 总集篇等半集保留小数，是重命名里真实存在的形态 (#667)
+        response.half_episode = _render(
+            req.template, _EPISODE_SAMPLE, episode=12.5, suffix=".mkv"
+        )
+        # 字幕复用正片模板，语言段固定插在扩展名之前
+        response.subtitle = _render(
+            req.template,
+            _EPISODE_SAMPLE,
+            episode=5,
+            suffix=".zh-tw.ass",
+            language="zh-tw",
+        )
+    if not movie_error and req.movie_template.strip():
+        response.movie = _render(
+            req.movie_template, _MOVIE_SAMPLE, episode=1, suffix=".mkv"
+        )
+    return response

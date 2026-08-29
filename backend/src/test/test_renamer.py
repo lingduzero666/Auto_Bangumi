@@ -6,7 +6,11 @@ import pytest
 
 from module.conf import settings
 from module.downloader import DownloadClient, RenameOutcome, RenameResult
-from module.manager.renamer import PreparedMediaRename, Renamer
+from module.manager.rename_template import (
+    DEFAULT_EPISODE_TEMPLATE,
+    DEFAULT_MOVIE_TEMPLATE,
+)
+from module.manager.renamer import PreparedMediaRename, RenameContext, Renamer
 from module.models import EpisodeFile, Notification, SubtitleFile
 
 # ---------------------------------------------------------------------------
@@ -326,6 +330,207 @@ class TestGenPathGroupTagStability:
         with patch.object(settings.bangumi_manage, "group_tag", True):
             result = Renamer.gen_path(ep, "Bangumi", method="none")
         assert result == "original/path/file.mkv"
+
+
+# ---------------------------------------------------------------------------
+# gen_path: 自定义模板
+# ---------------------------------------------------------------------------
+
+
+def _templates(episode: str, movie: str = DEFAULT_MOVIE_TEMPLATE):
+    """同时打桩两个模板字段。
+
+    必须两个都设：MagicMock 化的 settings 会让未设置的字段返回一个真值
+    MagicMock，_configured_templates 会把它 str() 成一个荒唐的模板。
+    """
+    return patch.multiple(
+        settings.bangumi_manage,
+        rename_template=episode,
+        movie_rename_template=movie,
+    )
+
+
+class TestGenPathTemplate:
+    """自定义模板分支。
+
+    最重要的一条契约：默认模板的输出必须与 pn **逐字节相同**。默认值是给所有
+    用户预填的，一旦漂移，任何切到 template 的用户都会被整库重命名。
+    """
+
+    def _ep(
+        self,
+        *,
+        media_path: str = "old.mkv",
+        title: str = "My Anime",
+        season: int = 1,
+        episode: int | float = 5,
+        suffix: str = ".mkv",
+        group: str | None = "TestGroup",
+        episode_type: str = "episode",
+    ) -> EpisodeFile:
+        return EpisodeFile(
+            media_path=media_path,
+            title=title,
+            season=season,
+            episode=episode,
+            suffix=suffix,
+            group=group,
+            episode_type=episode_type,
+        )
+
+    def test_default_template_matches_pn_byte_for_byte(self):
+        ep = self._ep()
+        with _templates(DEFAULT_EPISODE_TEMPLATE):
+            templated = Renamer.gen_path(ep, "Bangumi Name", method="template")
+        assert templated == Renamer.gen_path(ep, "Bangumi Name", method="pn")
+
+    def test_default_movie_template_matches_movie_branch(self):
+        ep = self._ep(episode_type="movie")
+        with _templates(DEFAULT_EPISODE_TEMPLATE):
+            templated = Renamer.gen_path(ep, "Bangumi Name", method="template")
+        assert templated == Renamer.gen_path(ep, "Bangumi Name", method="pn")
+
+    def test_custom_layout(self):
+        with _templates("[{{group}}] {{title}} - {{episode}} [{{resolution}}]"):
+            result = Renamer.gen_path(
+                self._ep(),
+                "Bangumi Name",
+                method="template",
+                context=RenameContext(resolution="1080p"),
+            )
+        assert result == "[TestGroup] My Anime - 05 [1080p].mkv"
+
+    def test_context_fields_are_available(self):
+        with _templates("{{title}} ({{year}}) {{source}} {{subtitle}} E{{episode}}"):
+            result = Renamer.gen_path(
+                self._ep(),
+                "Bangumi Name",
+                method="template",
+                context=RenameContext(year="2019", source="Baha", subtitle="CHT"),
+            )
+        assert result == "My Anime (2019) Baha CHT E05.mkv"
+
+    def test_missing_context_leaves_variables_empty(self):
+        """种子匹配不到 Bangumi 行时 context 为空，不能崩也不能留下空括号。"""
+        with _templates("{{title}} [{{resolution}}] E{{episode}}"):
+            result = Renamer.gen_path(self._ep(), "Bangumi Name", method="template")
+        assert result == "My Anime E05.mkv"
+
+    def test_group_falls_back_to_bangumi_row(self):
+        with _templates("{{title}} [{{group}}] E{{episode}}"):
+            result = Renamer.gen_path(
+                self._ep(group=None),
+                "Bangumi Name",
+                method="template",
+                context=RenameContext(group_name="RowGroup"),
+            )
+        assert result == "My Anime [RowGroup] E05.mkv"
+
+    def test_movie_uses_the_movie_template(self):
+        with _templates(DEFAULT_EPISODE_TEMPLATE, movie="{{title}} ({{year}})"):
+            result = Renamer.gen_path(
+                self._ep(episode_type="movie"),
+                "Bangumi Name",
+                method="template",
+                context=RenameContext(year="2019"),
+            )
+        assert result == "My Anime (2019).mkv"
+
+    def test_subtitle_inserts_language_before_suffix(self):
+        sub = SubtitleFile(
+            media_path="old.ass",
+            title="My Anime",
+            season=1,
+            episode=5,
+            language="zh-tw",
+            suffix=".ass",
+        )
+        with _templates("{{title}} S{{season}}E{{episode}}"):
+            result = Renamer.gen_path(sub, "Bangumi Name", method="subtitle_template")
+        assert result == "My Anime S01E05.zh-tw.ass"
+
+    def test_offset_is_applied(self):
+        with _templates("{{title}} E{{episode}}"):
+            result = Renamer.gen_path(
+                self._ep(episode=1),
+                "Bangumi Name",
+                method="template",
+                episode_offset=28,
+            )
+        assert result == "My Anime E29.mkv"
+
+    def test_empty_template_is_a_no_op(self):
+        """选了 template 却没填：原样返回，绝不回退到 pn 去动做种库。"""
+        with _templates(""):
+            result = Renamer.gen_path(self._ep(), "Bangumi Name", method="template")
+        assert result == "old.mkv"
+
+    def test_empty_movie_template_is_a_no_op(self):
+        with _templates(DEFAULT_EPISODE_TEMPLATE, movie=""):
+            result = Renamer.gen_path(
+                self._ep(episode_type="movie"), "Bangumi Name", method="template"
+            )
+        assert result == "old.mkv"
+
+    def test_all_variables_empty_leaves_the_file_alone(self):
+        """渲染后只剩扩展名时必须放弃——用空名字调 rename 是数据损失。
+
+        保存时的校验会拦下没有集数变量的剧集模板，但手改 config.json 仍能到
+        达这个状态，所以渲染侧也要兜底。
+        """
+        with _templates("[{{resolution}}] {{source}}"):
+            result = Renamer.gen_path(
+                self._ep(),
+                "Bangumi Name",
+                method="template",
+                context=RenameContext(),
+            )
+        assert result == "old.mkv"
+
+    def test_season_pack_names_stay_distinct(self):
+        """合集里每一集必须渲染出不同的名字，否则逐个改名会互相覆盖。"""
+        with _templates("{{title}} S{{season}}E{{episode}}"):
+            names = {
+                Renamer.gen_path(
+                    self._ep(episode=n, media_path=f"old{n}.mkv"),
+                    "Bangumi Name",
+                    method="template",
+                )
+                for n in range(1, 13)
+            }
+        assert len(names) == 12
+
+
+class TestMethodRenamesFiles:
+    """打 ``ab:renamed`` 标签的判定。
+
+    这个标签是终态标记：``rename()`` 在拉文件列表之前就会永久跳过带标签的
+    种子。空模板是彻底的 no-op，此时若误打标，用户之后把模板填好也再修不回来。
+    """
+
+    @pytest.mark.parametrize(
+        "method", ("none", "normal", "subtitle_none", "subtitle_normal")
+    )
+    def test_no_op_methods_do_not_tag(self, method):
+        assert Renamer._method_renames_files(method) is False
+
+    @pytest.mark.parametrize("method", ("pn", "advance", "subtitle_pn"))
+    def test_renaming_methods_tag(self, method):
+        assert Renamer._method_renames_files(method) is True
+
+    def test_template_with_content_tags(self):
+        with _templates(DEFAULT_EPISODE_TEMPLATE):
+            assert Renamer._method_renames_files("template") is True
+
+    def test_empty_templates_do_not_tag(self):
+        with _templates("", movie=""):
+            assert Renamer._method_renames_files("template") is False
+            assert Renamer._method_renames_files("subtitle_template") is False
+
+    def test_movie_only_template_still_tags(self):
+        """只填了剧场版模板：剧场版会被改名，所以仍要打标。"""
+        with _templates("", movie="{{title}}"):
+            assert Renamer._method_renames_files("template") is True
 
 
 # ---------------------------------------------------------------------------
