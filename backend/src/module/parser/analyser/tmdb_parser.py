@@ -66,6 +66,9 @@ class TMDBInfo:
     # `parsed_season > last_season` 的越界判断、文案也写着「TMDB只有N季」，
     # 覆盖成匹配季号会让合法的 S2 订阅误报 offset 建议。
     matched_season: int | None = None
+    # 放送星期，0=周一 .. 6=周日，与 bgm_calendar / Bangumi.air_weekday 一致。
+    # 全部由本模块**已经拉过**的响应推导，不产生额外请求，见 _derive_air_weekday。
+    air_weekday: int | None = None
 
     def get_offset_for_season(self, season: int) -> int:
         """Calculate offset for a season (negative sum of all previous seasons' episodes).
@@ -339,6 +342,80 @@ def _season_from_episode_dates(
             if best is None or candidate < best:
                 best = candidate
     return best[1] if best is not None else None
+
+
+# 用集级日期推星期时的取样窗口：只看最近这么多集。长番跨 cour 会换档期，
+# 最近的档期才是日历要展示的那个；窗口也天然排除了「第 1 集提前特别放送」
+# 这类首播偏移。
+_WEEKDAY_SAMPLE = 6
+
+
+def _derive_air_weekday(
+    info_content: dict,
+    season_nums: list[tuple[int, int]],
+    episode_results: list,
+) -> int | None:
+    """推导放送星期（0=周一 .. 6=周日），全部取自已经拉过的响应，零额外请求。
+
+    优先级从「当周档期」到「史前首播」逐级降级：
+
+    1. ``next_episode_to_air`` —— 下一集的播出日，正是日历要展示的那个
+    2. ``last_episode_to_air`` —— 覆盖分割放送与刚完结的番
+    3. 最高季的最近若干集 ``air_date`` 的众数 —— 吃掉挪档特别篇的噪声
+    4. 最新一季的季级 ``air_date``
+    5. ``first_air_date`` —— 只作最后兜底：它是「这部作品史上第一集」，
+       多季/多 cour 番换档很常见，单独用它会写入过时的星期
+
+    ``date.weekday()`` 天然就是 0=周一，无需像 bgm 的 1-7 那样换算。
+    """
+    for key in ("next_episode_to_air", "last_episode_to_air"):
+        episode = info_content.get(key)
+        if isinstance(episode, dict):
+            aired = _parse_tmdb_date(episode.get("air_date"))
+            if aired is not None:
+                return aired.weekday()
+
+    weekday = _weekday_from_episode_dates(season_nums, episode_results)
+    if weekday is not None:
+        return weekday
+
+    seasons = [s for s in info_content.get("seasons") or [] if _is_regular_season(s)]
+    latest = max(
+        (s for s in seasons if _parse_tmdb_date(s.get("air_date")) is not None),
+        key=lambda s: s.get("season_number") or 0,
+        default=None,
+    )
+    if latest is not None:
+        aired = _parse_tmdb_date(latest.get("air_date"))
+        if aired is not None:
+            return aired.weekday()
+
+    first_air = _parse_tmdb_date(info_content.get("first_air_date"))
+    return first_air.weekday() if first_air is not None else None
+
+
+def _weekday_from_episode_dates(
+    season_nums: list[tuple[int, int]], episode_results: list
+) -> int | None:
+    """取最高季最近 ``_WEEKDAY_SAMPLE`` 集播出日的众数星期。
+
+    众数未过半时返回 None：档期本身就不规律，猜一个不如交给下一级来源。
+    """
+    latest: tuple[int, list] | None = None
+    for (season_num, _), episodes in zip(season_nums, episode_results):
+        if isinstance(episodes, BaseException) or not episodes:
+            continue
+        if latest is None or season_num > latest[0]:
+            latest = (season_num, episodes)
+    if latest is None:
+        return None
+
+    pool = [e["air_date"].weekday() for e in latest[1][-_WEEKDAY_SAMPLE:]]
+    top = max(set(pool), key=pool.count)
+    if len(pool) >= 3 and pool.count(top) * 2 <= len(pool):
+        logger.debug("TMDB air weekday inconclusive for season %s: %s", latest[0], pool)
+        return None
+    return top
 
 
 async def _select_by_air_date(
@@ -637,6 +714,9 @@ async def tmdb_parser(
                     virtual_season_starts if virtual_season_starts else None
                 ),
                 matched_season=matched_season,
+                air_weekday=_derive_air_weekday(
+                    info_content, season_nums, episode_results
+                ),
             )
             if len(_tmdb_cache) >= _TMDB_CACHE_MAX:
                 _tmdb_cache.popitem(last=False)

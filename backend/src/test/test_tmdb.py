@@ -542,3 +542,161 @@ async def test_tmdb_parser_live():
     assert tmdb_info.title == "冰海战记"
     assert tmdb_info.year == bangumi_year
     assert tmdb_info.last_season == bangumi_season
+
+
+# --- 放送星期推导 -------------------------------------------------------
+
+
+def _episodes(*dates: str) -> list[dict]:
+    return [
+        {"episode_number": i, "air_date": datetime.date.fromisoformat(d)}
+        for i, d in enumerate(dates, start=1)
+    ]
+
+
+_DERIVE = tmdb_parser_module._derive_air_weekday
+
+
+def test_derive_air_weekday_prefers_next_episode():
+    """下一集的播出日就是日历要展示的当周档期，优先级最高。"""
+    info = {
+        "next_episode_to_air": {"air_date": "2026-04-03"},  # 周五
+        "last_episode_to_air": {"air_date": "2026-03-25"},  # 周三
+        "first_air_date": "2019-07-08",  # 周一
+    }
+
+    assert _DERIVE(info, [], []) == 4
+
+
+def test_derive_air_weekday_falls_back_to_last_episode():
+    """完结番没有 next_episode_to_air，用最后一集。"""
+    info = {
+        "next_episode_to_air": None,
+        "last_episode_to_air": {"air_date": "2026-03-25"},  # 周三
+        "first_air_date": "2019-07-08",
+    }
+
+    assert _DERIVE(info, [], []) == 2
+
+
+def test_derive_air_weekday_uses_episode_mode():
+    """两个 episode_to_air 都没有时，用最高季最近几集的众数。"""
+    info = {"first_air_date": "2019-07-08"}  # 周一，不该被用到
+    season_nums = [(1, 12), (2, 6)]
+    episode_results = [
+        _episodes("2019-07-08"),  # 低季号，不参与
+        _episodes(
+            "2026-01-07",  # 周三——挪档的特别篇
+            "2026-01-09",  # 以下均为周五
+            "2026-01-16",
+            "2026-01-23",
+            "2026-01-30",
+            "2026-02-06",
+        ),
+    ]
+
+    assert _DERIVE(info, season_nums, episode_results) == 4
+
+
+def test_derive_air_weekday_rejects_inconclusive_mode():
+    """档期本身不规律时返回 None，交给下一级来源，不硬猜。"""
+    info: dict = {}
+    season_nums = [(1, 4)]
+    episode_results = [
+        _episodes("2026-01-05", "2026-01-07", "2026-01-09", "2026-01-11")
+    ]
+
+    assert _DERIVE(info, season_nums, episode_results) is None
+
+
+def test_derive_air_weekday_falls_back_to_latest_season_air_date():
+    info = {
+        "seasons": [
+            {"name": "第 1 季", "air_date": "2019-07-08", "season_number": 1},
+            {"name": "第 2 季", "air_date": "2023-01-09", "season_number": 2},
+        ],
+        "first_air_date": "2019-07-10",
+    }
+
+    assert _DERIVE(info, [], []) == 0  # 2023-01-09 是周一
+
+
+def test_derive_air_weekday_ignores_special_seasons():
+    """特别篇季不参与季级兜底（与 get_season 的口径一致）。"""
+    info = {
+        "seasons": [
+            {"name": "第 1 季", "air_date": "2026-01-09", "season_number": 1},
+            {"name": "特别篇", "air_date": "2026-01-11", "season_number": 2},
+        ],
+    }
+
+    assert _DERIVE(info, [], []) == 4  # 周五，不是特别篇的周日
+
+
+def test_derive_air_weekday_last_resort_is_first_air_date():
+    assert _DERIVE({"first_air_date": "2019-07-08"}, [], []) == 0
+
+
+def test_derive_air_weekday_returns_none_without_any_date():
+    assert _DERIVE({}, [], []) is None
+
+
+def test_derive_air_weekday_ignores_malformed_dates():
+    """空串/非法日期不能抛异常，逐级降级即可。"""
+    info = {
+        "next_episode_to_air": {"air_date": ""},
+        "last_episode_to_air": {"air_date": "not-a-date"},
+        "first_air_date": "2019-07-08",
+    }
+
+    assert _DERIVE(info, [], []) == 0
+
+
+def test_derive_air_weekday_skips_failed_season_requests():
+    """gather 的异常项必须被跳过，不能参与推导。"""
+    info = {"first_air_date": "2019-07-08"}
+    season_nums = [(1, 12)]
+
+    assert _DERIVE(info, season_nums, [RuntimeError("boom")]) == 0
+
+
+async def test_tmdb_parser_exposes_air_weekday(mocker):
+    """整条链路把星期挂到 TMDBInfo 上，供日历使用。"""
+
+    async def fake_get_json(url: str) -> dict:
+        if "/search/tv" in url:
+            return {"results": [{"id": 82684}]}
+        if "/season/" in url:
+            return {"episodes": []}
+        return {**_SHOW_INFO, "next_episode_to_air": {"air_date": "2026-04-03"}}
+
+    mocker.patch.object(
+        tmdb_parser_module.RequestContent, "get_json", side_effect=fake_get_json
+    )
+    tmdb_parser_module._tmdb_cache.clear()
+
+    info = await tmdb_parser("海盗战记", "zh", test=True)
+
+    assert info is not None
+    assert info.air_weekday == 4  # 2026-04-03 是周五
+
+
+async def test_movie_has_no_air_weekday(mocker):
+    """剧场版没有周档期。"""
+
+    async def fake_get_json(url: str) -> dict:
+        if "/search/movie" in url:
+            return {
+                "results": [{"id": 1, "title": "电影", "release_date": "2024-08-16"}]
+            }
+        return {}
+
+    mocker.patch.object(
+        tmdb_parser_module.RequestContent, "get_json", side_effect=fake_get_json
+    )
+    tmdb_parser_module._tmdb_cache.clear()
+
+    info = await tmdb_parser("电影", "zh", test=True, is_movie=True)
+
+    assert info is not None
+    assert info.air_weekday is None
