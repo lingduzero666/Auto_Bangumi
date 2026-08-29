@@ -15,7 +15,7 @@ router = APIRouter(prefix="/rss", tags=["rss"])
 
 # RSSItem.parser 的合法取值（与 webui ab-add-rss 的选项一致）；
 # 这些值即便与搜索站点同名（mikan）也不做站点名映射
-PARSER_TYPES = {"mikan", "tmdb", "parser"}
+PARSER_TYPES = {"mikan", "tmdb", "parser", "mix"}
 
 
 @router.get(

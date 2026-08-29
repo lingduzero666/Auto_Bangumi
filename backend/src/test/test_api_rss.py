@@ -465,3 +465,28 @@ class TestSubscribe:
         assert response.status_code == 200
         assert mock_subscribe.await_args is not None
         assert mock_subscribe.await_args.kwargs["parser"] == "mikan"
+
+    def test_subscribe_mix_parser_passes_through_unchanged(self, authed_client):
+        """mix 也是解析器类型，必须和 mikan/tmdb/parser 一样免受站点名映射。"""
+        resp_model = ResponseModel(
+            status=True, status_code=200, msg_en="Subscribed.", msg_zh="订阅成功。"
+        )
+        with (
+            patch(
+                "module.api.rss.SeasonCollector.subscribe_season",
+                new_callable=AsyncMock,
+                return_value=resp_model,
+            ) as mock_subscribe,
+            patch("module.api.rss.get_provider", return_value=self._PROVIDERS),
+        ):
+            response = authed_client.post(
+                "/api/v1/rss/subscribe",
+                json={
+                    "data": make_bangumi(id=1).model_dump(),
+                    "rss": {"url": "https://mikanani.me/RSS/link", "parser": "mix"},
+                },
+            )
+
+        assert response.status_code == 200
+        assert mock_subscribe.await_args is not None
+        assert mock_subscribe.await_args.kwargs["parser"] == "mix"

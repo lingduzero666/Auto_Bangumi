@@ -5,6 +5,7 @@ from module.conf import settings
 from module.models import Bangumi, Movie, ResponseModel, RSSItem, Torrent
 from module.network import RequestContent
 from module.parser import TitleParser
+from module.parser.analyser import mix_parser
 from module.parser.analyser.selector import parser_engine_snapshot
 
 from .engine import RSSEngine
@@ -27,17 +28,15 @@ class RSSAnalyser:
                 logger.warning("Mikan movie torrent has no homepage info.")
             else:
                 try:
-                    poster_link, official_title = await TitleParser.mikan_parser(
-                        torrent.homepage
-                    )
+                    mikan_info = await TitleParser.mikan_parser(torrent.homepage)
                 except AttributeError as e:
                     logger.warning(
                         f"Failed to parse Mikan homepage {torrent.homepage}: {e}"
                     )
                 else:
-                    movie.poster_link = poster_link
-                    if official_title:
-                        movie.official_title = official_title
+                    movie.poster_link = mikan_info.poster_link
+                    if mikan_info.official_title:
+                        movie.official_title = mikan_info.official_title
         elif rss.parser == "tmdb":
             tmdb_title, _, year, poster_link = await TitleParser.tmdb_parser(
                 movie.official_title,
@@ -52,6 +51,23 @@ class RSSAnalyser:
                 except (ValueError, TypeError):
                     pass
             movie.poster_link = poster_link
+        elif rss.parser == "mix":
+            # mix 自己处理全部降级，空字段一律表示「没拿到，别覆盖」
+            mix_result = await mix_parser(
+                torrent.homepage,
+                movie.official_title,
+                settings.rss_parser.language,
+                is_movie=True,
+            )
+            if mix_result.official_title:
+                movie.official_title = mix_result.official_title
+            if mix_result.year:
+                try:
+                    movie.year = int(mix_result.year)
+                except (ValueError, TypeError):
+                    pass
+            if mix_result.poster_link:
+                movie.poster_link = mix_result.poster_link
         if movie.official_title:
             movie.official_title = re.sub(r"[/:.\\]", " ", movie.official_title)
 
@@ -69,17 +85,15 @@ class RSSAnalyser:
                 logger.warning("Mikan torrent has no homepage info.")
             else:
                 try:
-                    poster_link, official_title = await TitleParser.mikan_parser(
-                        torrent.homepage
-                    )
+                    mikan_info = await TitleParser.mikan_parser(torrent.homepage)
                 except AttributeError as e:
                     logger.warning(
                         f"Failed to parse Mikan homepage " f"{torrent.homepage}: {e}"
                     )
                 else:
-                    bangumi.poster_link = poster_link
-                    if official_title:
-                        bangumi.official_title = official_title
+                    bangumi.poster_link = mikan_info.poster_link
+                    if mikan_info.official_title:
+                        bangumi.official_title = mikan_info.official_title
         elif rss.parser == "tmdb":
             tmdb_title, season, year, poster_link = await TitleParser.tmdb_parser(
                 bangumi.official_title,
@@ -91,6 +105,22 @@ class RSSAnalyser:
             bangumi.year = year
             bangumi.season = season
             bangumi.poster_link = poster_link
+        elif rss.parser == "mix":
+            # mix 自己处理全部降级，空字段一律表示「没拿到，别覆盖」
+            mix_result = await mix_parser(
+                torrent.homepage,
+                bangumi.official_title,
+                settings.rss_parser.language,
+                is_movie=bangumi.episode_type == "movie",
+            )
+            if mix_result.official_title:
+                bangumi.official_title = mix_result.official_title
+            if mix_result.year:
+                bangumi.year = mix_result.year
+            if mix_result.season:
+                bangumi.season = mix_result.season
+            if mix_result.poster_link:
+                bangumi.poster_link = mix_result.poster_link
         else:
             pass
         if bangumi.official_title:
