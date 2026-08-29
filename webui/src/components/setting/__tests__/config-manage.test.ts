@@ -14,12 +14,14 @@ vi.mock('@/hooks/useMyI18n', () => ({
 vi.mock('@/api/config', () => ({
   apiConfig: {
     previewRenameTemplate: vi.fn().mockResolvedValue({
-      episode: '刀剑神域 S02E05.mkv',
-      half_episode: '刀剑神域 S02E12.5.mkv',
-      subtitle: '刀剑神域 S02E05.zh-tw.ass',
-      movie: '游戏人生 零 (2017).mkv',
+      episode: '刀剑神域 (2012)/Season 2/[ANi] 刀剑神域 S02E05.mkv',
+      half_episode: '刀剑神域 (2012)/Season 2/[ANi] 刀剑神域 S02E12.5.mkv',
+      subtitle: '刀剑神域 (2012)/Season 2/[ANi] 刀剑神域 S02E05.zh-tw.ass',
+      movie: '游戏人生 零 (2017)/[VCB-Studio] 游戏人生 零 (2017).mkv',
+      folder: '刀剑神域 (2012)/',
       error: '',
       movie_error: '',
+      folder_error: '',
     }),
   },
 }));
@@ -30,8 +32,10 @@ vi.mock('@/store/config', async () => {
     enable: true,
     eps_complete: false,
     rename_method: 'pn',
-    rename_template: '{{title}} S{{season}}E{{episode}}',
-    movie_rename_template: '{{title}}',
+    rename_template:
+      '[{{group}}] {{official_title}} S{{season:2}}E{{episode:2}}',
+    movie_rename_template: '[{{group}}] {{official_title}} ({{year}})',
+    folder_template: '{{official_title}} ({{year}})',
     revision_conflict_policy: 'hold',
     group_tag: false,
     remove_bad_torrent: false,
@@ -159,28 +163,42 @@ describe('config-manage', () => {
       await new Promise((resolve) => setTimeout(resolve, 350));
       await nextTick();
 
-      // 两个模板各自一个示例框：剧集三行、剧场版一行
+      // 三个模板各自一个示例框：剧集三行、剧场版一行、文件夹一行。
+      // 剧集/剧场版给的是完整路径——文件夹模板会影响它们，示例要跟着变。
       const boxes = wrapper.findAll('.template-preview');
-      expect(boxes).toHaveLength(2);
+      expect(boxes).toHaveLength(3);
+      // 顺序：文件夹 → 剧集 → 剧场版
       expect(
         boxes[0].findAll('.template-preview-line').map((line) => line.text())
-      ).toEqual([
-        '刀剑神域 S02E05.mkv',
-        '刀剑神域 S02E12.5.mkv',
-        '刀剑神域 S02E05.zh-tw.ass',
-      ]);
+      ).toEqual(['刀剑神域 (2012)/']);
       expect(
         boxes[1].findAll('.template-preview-line').map((line) => line.text())
-      ).toEqual(['游戏人生 零 (2017).mkv']);
-      // "只影响新下载"的提示必须始终可见
-      expect(wrapper.find('.hint-text').text()).toContain(
+      ).toEqual([
+        '刀剑神域 (2012)/Season 2/[ANi] 刀剑神域 S02E05.mkv',
+        '刀剑神域 (2012)/Season 2/[ANi] 刀剑神域 S02E12.5.mkv',
+        '刀剑神域 (2012)/Season 2/[ANi] 刀剑神域 S02E05.zh-tw.ass',
+      ]);
+      expect(
+        boxes[2].findAll('.template-preview-line').map((line) => line.text())
+      ).toEqual(['游戏人生 零 (2017)/[VCB-Studio] 游戏人生 零 (2017).mkv']);
+      // "只影响新下载"的提示必须始终可见。第一个 .hint-text 是文件夹变量
+      // 说明（紧跟文件夹模板），提示文案在最后那一段里。
+      const hints = wrapper.findAll('.hint-text');
+      expect(hints[hints.length - 1].text()).toContain(
         'config.manage_set.rename_template_hint'
       );
       // 变量名是代码字面量，必须由组件渲染而不是走 i18n——放进 i18n JSON 会
       // 被 vue-i18n 当成嵌套占位符，整个构建会失败（error code 9）。
-      expect(wrapper.find('.template-variables-list').text()).toBe(
-        '{{title}} {{bangumi_name}} {{season}} {{episode}} {{season_nopad}} ' +
-          '{{episode_nopad}} {{group}} {{year}} {{resolution}} {{source}} ' +
+      const lists = wrapper.findAll('.template-variables-list');
+      // 文件夹变量说明紧跟文件夹模板，排在最前；文件夹在添加种子时生成，
+      // 拿不到 parser_title / episode / folder_name
+      expect(lists[0].text()).toBe(
+        '{{official_title}} {{year}} {{group}} {{resolution}} ' +
+          '{{source}} {{subtitle}}'
+      );
+      expect(lists[1].text()).toBe(
+        '{{parser_title}} {{official_title}} {{folder_name}} {{season:2}} ' +
+          '{{episode:2}} {{group}} {{year}} {{resolution}} {{source}} ' +
           '{{subtitle}}'
       );
     } finally {

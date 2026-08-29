@@ -69,19 +69,26 @@ class BangumiManage(BaseModel):
     enable: bool = Field(default=True, description="Enable bangumi manage")
     eps_complete: bool = Field(default=False, description="Enable eps complete")
     rename_method: str = Field(default="pn", description="Rename method")
-    # rename_method == "template" 时启用。留空则回退到 pn 的行为。
+    # rename_method == "template" 时启用。留空则什么都不做（不改名也不打
+    # ab:renamed 标签），绝不回退到 pn——那等于在用户没要求的情况下动做种库。
     # 刻意不进 ENV_TO_ATTR：AB_METHOD 的 lambda 会 .lower()，会压坏模板里的
     # 大小写；模板本身也不适合走环境变量。
     # 默认值与 manager/rename_template.py 的 DEFAULT_* 常量必须一致
     # （test_rename_template.py 有等值断言）。这里写字面量而不是 import：
     # module.manager.__init__ 会拉起 renamer → module.conf → 本模块，成环。
     rename_template: str = Field(
-        default="{{title}} S{{season}}E{{episode}}",
+        default="[{{group}}] {{official_title}} S{{season:2}}E{{episode:2}}",
         description="Custom episode filename template",
     )
     movie_rename_template: str = Field(
-        default="{{title}}",
+        default="[{{group}}] {{official_title}} ({{year}})",
         description="Custom movie filename template",
+    )
+    # 番剧文件夹名。只在新番剧首次生成 save_path 时生效——改它不会移动
+    # 已有番剧的目录（那需要 move_torrent + 重建 qB 规则）。
+    folder_template: str = Field(
+        default="{{official_title}} ({{year}})",
+        description="Custom bangumi folder name template",
     )
     group_tag: bool = Field(default=False, description="Enable group tag")
     remove_bad_torrent: bool = Field(default=False, description="Remove bad torrent")

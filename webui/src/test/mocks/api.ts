@@ -135,8 +135,10 @@ export const mockConfig = {
     enable: true,
     eps_complete: false,
     rename_method: 'pn',
-    rename_template: '{{title}} S{{season}}E{{episode}}',
-    movie_rename_template: '{{title}}',
+    rename_template:
+      '[{{group}}] {{official_title}} S{{season:2}}E{{episode:2}}',
+    movie_rename_template: '[{{group}}] {{official_title}} ({{year}})',
+    folder_template: '{{official_title}} ({{year}})',
     revision_conflict_policy: 'hold',
     group_tag: false,
     remove_bad_torrent: false,

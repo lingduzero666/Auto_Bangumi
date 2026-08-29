@@ -24,22 +24,39 @@ const renameMethod: RenameMethod = [
 // 二来 vue-i18n 的插值语法就是 {xxx}，把 {{title}} 放进 JSON 会被消息编译器
 // 当成嵌套占位符而编译失败（error code 9）。
 // 同理 Vue 模板里也不能直接写 {{title}}，只能从 script 传字符串进去。
+// 季度/集数写成 {{season:2}} 的形式带补零宽度，不带 :N 就是原值
 const TEMPLATE_VARIABLES = [
-  'title',
-  'bangumi_name',
-  'season',
-  'episode',
-  'season_nopad',
-  'episode_nopad',
+  'parser_title',
+  'official_title',
+  'folder_name',
+  'season:2',
+  'episode:2',
   'group',
   'year',
   'resolution',
   'source',
   'subtitle',
 ];
-const variableList = TEMPLATE_VARIABLES.map((name) => `{{${name}}}`).join(' ');
-const episodePlaceholder = '{{title}} S{{season}}E{{episode}}';
-const moviePlaceholder = '{{title}} ({{year}})';
+// 文件夹在添加种子时生成，那一刻没有解析过的文件——parser_title / episode
+// 拿不到，folder_name 也不能自我引用，所以是独立的一套更小的变量
+// season 刻意不给：gen_save_path 已经单独建了 "Season N" 子目录
+const FOLDER_TEMPLATE_VARIABLES = [
+  'official_title',
+  'year',
+  'group',
+  'resolution',
+  'source',
+  'subtitle',
+];
+function asPlaceholders(names: string[]) {
+  return names.map((name) => `{{${name}}}`).join(' ');
+}
+const variableList = asPlaceholders(TEMPLATE_VARIABLES);
+const folderVariableList = asPlaceholders(FOLDER_TEMPLATE_VARIABLES);
+const episodePlaceholder =
+  '[{{group}}] {{official_title}} S{{season:2}}E{{episode:2}}';
+const moviePlaceholder = '[{{group}}] {{official_title}} ({{year}})';
+const folderPlaceholder = '{{official_title}} ({{year}})';
 
 // 示例由后端渲染：模板求值逻辑在 renamer 里，前端复刻必然漂移（补零规则、
 // 半集 12.5、剧场版分支），示例一旦与实际重命名不符就比没有示例更糟。
@@ -58,6 +75,11 @@ const movieExamples = computed(() => {
   return movie ? [movie] : [];
 });
 
+const folderExamples = computed(() => {
+  const folder = preview.value?.folder;
+  return folder ? [folder] : [];
+});
+
 const fetchPreview = useDebounceFn(async () => {
   if (manage.value.rename_method !== 'template') {
     preview.value = null;
@@ -67,6 +89,7 @@ const fetchPreview = useDebounceFn(async () => {
     preview.value = await apiConfig.previewRenameTemplate({
       template: manage.value.rename_template ?? '',
       movie_template: manage.value.movie_rename_template ?? '',
+      folder_template: manage.value.folder_template ?? '',
     });
   } catch {
     // 预览失败不该打断设置流程；不显示示例即可
@@ -79,6 +102,7 @@ watch(
     manage.value.rename_method,
     manage.value.rename_template,
     manage.value.movie_rename_template,
+    manage.value.folder_template,
   ],
   () => fetchPreview(),
   { immediate: true }
@@ -164,6 +188,40 @@ const itemsAfterTemplate = computed<SettingItem<BangumiManage>[]>(() => [
            而示例块必须是 ab-field 的兄弟节点——放进 ab-field 的默认 slot 会
            被挤进桌面端那列 200px 宽的控件区里。同 config-search-provider.vue。 -->
       <div v-if="manage.rename_method === 'template'" space-y-8>
+        <ab-field
+          :label="$t('config.manage_set.rename_template_folder')"
+          :error="preview?.folder_error ?? ''"
+        >
+          <ab-input
+            v-model="manage.folder_template"
+            type="text"
+            :error="Boolean(preview?.folder_error)"
+            :placeholder="folderPlaceholder"
+          />
+        </ab-field>
+
+        <div v-if="folderExamples.length" class="template-preview">
+          <div class="template-preview-label">
+            {{ $t('config.manage_set.rename_template_example') }}
+          </div>
+          <div
+            v-for="line in folderExamples"
+            :key="line"
+            class="template-preview-line"
+          >
+            {{ line }}
+          </div>
+        </div>
+
+        <div class="hint-text">
+          <div class="template-variables">
+            {{ $t('config.manage_set.rename_template_variables') }}:
+            <span class="template-variables-list">{{
+              folderVariableList
+            }}</span>
+          </div>
+        </div>
+
         <ab-field
           :label="$t('config.manage_set.rename_template')"
           :error="preview?.error ?? ''"

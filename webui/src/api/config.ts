@@ -47,6 +47,7 @@ export const apiConfig = {
   async previewRenameTemplate(payload: {
     template: string;
     movie_template: string;
+    folder_template: string;
   }) {
     const { data } = await axios.post<RenamePreview>(
       'api/v1/config/rename/preview',

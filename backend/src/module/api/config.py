@@ -228,28 +228,33 @@ async def list_llm_models(req: LLMModelsRequest):
 class RenamePreviewRequest(BaseModel):
     template: str = ""
     movie_template: str = ""
+    folder_template: str = ""
 
 
 class RenamePreviewResponse(BaseModel):
+    # 剧集/剧场版给的是完整路径，因为文件夹模板会影响它们
     episode: str = ""
     half_episode: str = ""
     subtitle: str = ""
     movie: str = ""
+    folder: str = ""
     error: str = ""
     movie_error: str = ""
+    folder_error: str = ""
 
 
 class _PreviewSample(NamedTuple):
     """预览用的番剧样本。
 
-    刻意硬编码：首次安装时库里一条番剧都没有；而且模板要用的 title/suffix 来自
-    **文件名**解析结果，Bangumi 行里根本没有文件名——所谓"真实数据"也只有一半
-    是真的。回显真实记录还会绕过 /config/get 的敏感字段掩码（rss_link 里可能
-    带 passkey）。响应体只回渲染后的文件名字符串。
+    刻意硬编码：首次安装时库里一条番剧都没有；而且模板要用的
+    parser_title/suffix 来自**文件名**解析结果，Bangumi 行里根本没有文件名
+    ——所谓"真实数据"也只有一半是真的。回显真实记录还会绕过 /config/get 的
+    敏感字段掩码（rss_link 里可能带 passkey）。响应体只回渲染后的文件名。
     """
 
-    title: str
-    bangumi_name: str
+    parser_title: str
+    official_title: str
+    folder_name: str
     season: int
     year: str
     group: str = "Lilith-Raws"
@@ -260,16 +265,22 @@ class _PreviewSample(NamedTuple):
 
 # 用第二季做样本，季号补零才看得出来
 _EPISODE_SAMPLE = _PreviewSample(
-    title="刀剑神域",
-    bangumi_name="刀剑神域 (2012)",
+    # parser_title 来自种子文件名（常是罗马音），official_title 来自数据库
+    # ——样本里刻意取不同的值，好让三个标题变量的区别一眼可见
+    parser_title="Sword Art Online",
+    official_title="刀剑神域",
+    folder_name="刀剑神域 (2012)",
     season=2,
     year="2012",
+    group="ANi",
 )
 _MOVIE_SAMPLE = _PreviewSample(
-    title="游戏人生 零",
-    bangumi_name="游戏人生 零 (2017)",
+    parser_title="游戏人生 零",
+    official_title="游戏人生 零",
+    folder_name="游戏人生 零 (2017)",
     season=1,
     year="2017",
+    group="VCB-Studio",
     source="BD",
 )
 
@@ -288,8 +299,12 @@ async def preview_rename_template(req: RenamePreviewRequest):
     渲染走的是重命名管线同一套 ``build_fields`` / ``render_template``，所以
     预览不会对用户说谎。
     """
+    from module.downloader.path import sanitize_path_fragment
     from module.manager.rename_template import (
+        DEFAULT_FOLDER_TEMPLATE,
+        FOLDER_VARIABLE_NAMES,
         build_fields,
+        build_folder_fields,
         render_template,
         validate_template,
     )
@@ -303,8 +318,9 @@ async def preview_rename_template(req: RenamePreviewRequest):
         language: str = "",
     ) -> str:
         fields = build_fields(
-            title=sample.title,
-            bangumi_name=sample.bangumi_name,
+            parser_title=sample.parser_title,
+            official_title=sample.official_title,
+            folder_name=sample.folder_name,
             season=sample.season,
             episode=episode,
             group=sample.group,
@@ -316,27 +332,61 @@ async def preview_rename_template(req: RenamePreviewRequest):
         )
         return render_template(template, fields, suffix=suffix)
 
+    def _folder(sample: _PreviewSample) -> str:
+        """渲染番剧文件夹名。与文件名相反，文件夹必须清洗保留字符 (#721)。"""
+        template = req.folder_template.strip() or DEFAULT_FOLDER_TEMPLATE
+        fields = build_folder_fields(
+            parser_title="",
+            official_title=sample.official_title,
+            group=sample.group,
+            year=sample.year,
+            resolution=sample.resolution,
+            source=sample.source,
+            subtitle=sample.subtitle,
+        )
+        return sanitize_path_fragment(render_template(template, fields))
+
     error = validate_template(req.template, require_episode=True) or ""
     movie_error = validate_template(req.movie_template) or ""
-    response = RenamePreviewResponse(error=error, movie_error=movie_error)
-    if not error and req.template.strip():
-        response.episode = _render(
-            req.template, _EPISODE_SAMPLE, episode=5, suffix=".mkv"
+    folder_error = (
+        validate_template(req.folder_template, allowed=FOLDER_VARIABLE_NAMES) or ""
+    )
+    response = RenamePreviewResponse(
+        error=error, movie_error=movie_error, folder_error=folder_error
+    )
+
+    # 示例只显示到番剧文件夹这一层，不带 settings.downloader.path 前缀：那段是
+    # 用户自己配的、跟模板无关，还会把示例撑得很长。因此固定用 "/" 拼接即可，
+    # 不必跟随下载路径的 Windows/POSIX 风格。
+    episode_folder = "" if folder_error else _folder(_EPISODE_SAMPLE)
+    movie_folder = "" if folder_error else _folder(_MOVIE_SAMPLE)
+    if not folder_error:
+        # 带上尾斜杠，一眼能看出这是目录而不是文件
+        response.folder = f"{episode_folder}/"
+
+    def _in_season_folder(name: str) -> str:
+        return f"{episode_folder}/Season {_EPISODE_SAMPLE.season}/{name}"
+
+    if not error and not folder_error and req.template.strip():
+        response.episode = _in_season_folder(
+            _render(req.template, _EPISODE_SAMPLE, episode=5, suffix=".mkv")
         )
         # 总集篇等半集保留小数，是重命名里真实存在的形态 (#667)
-        response.half_episode = _render(
-            req.template, _EPISODE_SAMPLE, episode=12.5, suffix=".mkv"
+        response.half_episode = _in_season_folder(
+            _render(req.template, _EPISODE_SAMPLE, episode=12.5, suffix=".mkv")
         )
         # 字幕复用正片模板，语言段固定插在扩展名之前
-        response.subtitle = _render(
-            req.template,
-            _EPISODE_SAMPLE,
-            episode=5,
-            suffix=".zh-tw.ass",
-            language="zh-tw",
+        response.subtitle = _in_season_folder(
+            _render(
+                req.template,
+                _EPISODE_SAMPLE,
+                episode=5,
+                suffix=".zh-tw.ass",
+                language="zh-tw",
+            )
         )
-    if not movie_error and req.movie_template.strip():
-        response.movie = _render(
-            req.movie_template, _MOVIE_SAMPLE, episode=1, suffix=".mkv"
-        )
+    if not movie_error and not folder_error and req.movie_template.strip():
+        # 剧场版是扁平布局，没有 Season 子目录
+        name = _render(req.movie_template, _MOVIE_SAMPLE, episode=1, suffix=".mkv")
+        response.movie = f"{movie_folder}/{name}"
     return response
