@@ -22,7 +22,7 @@ from module.models import EpisodeFile, Notification, RenameOperation, SubtitleFi
 from module.notification import RenameConflictEvent
 from module.parser import TitleParser
 
-from .rename_template import build_fields, format_episode, render_template
+from .rename_template import build_fields, format_number, render_template
 from .revision_policy import (
     RevisionIdentity,
     is_strict_upgrade,
@@ -74,6 +74,7 @@ class RenameContext:
     episode_offset: int = 0
     season_offset: int = 0
     episode_type: str = "episode"
+    official_title: str | None = None
     group_name: str | None = None
     year: str | None = None
     resolution: str | None = None
@@ -92,6 +93,7 @@ def _context_from_bangumi(bangumi) -> RenameContext:
         episode_offset=bangumi.episode_offset,
         season_offset=bangumi.season_offset,
         episode_type=bangumi.episode_type,
+        official_title=getattr(bangumi, "official_title", None),
         group_name=getattr(bangumi, "group_name", None),
         year=getattr(bangumi, "year", None),
         resolution=getattr(bangumi, "dpi", None),
@@ -148,7 +150,7 @@ class Renamer:
         # 总集篇等半集（12.5）保留小数，否则会覆盖同季的整数集 (#667)；
         # 整数值沿用两位补零。实现移到 rename_template 以便自定义模板复用同一
         # 份规则，这里保留薄委托，行为不变。
-        return format_episode(episode)
+        return format_number(episode, 2)
 
     @staticmethod
     def gen_movie_path(
@@ -282,8 +284,9 @@ class Renamer:
         # assert 在 python -O 下会被剥掉，取 language 不能依赖它
         language = str(getattr(file_info, "language", "") or "") if is_subtitle else ""
         fields = build_fields(
-            title=file_info.title,
-            bangumi_name=bangumi_name,
+            parser_title=file_info.title,
+            official_title=context.official_title if context else None,
+            folder_name=bangumi_name,
             season=season,
             episode=episode,
             group=file_info.group or (context.group_name if context else None),

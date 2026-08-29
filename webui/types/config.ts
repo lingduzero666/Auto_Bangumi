@@ -12,12 +12,15 @@ export type RenameMethod = ['normal', 'pn', 'advance', 'none', 'template'];
 export type RevisionConflictPolicy = ['hold', 'replace'];
 /** 命名模板的示例渲染结果，由 POST /config/rename/preview 返回 */
 export interface RenamePreview {
+  /** 剧集/剧场版给的是完整路径，因为文件夹模板会影响它们 */
   episode: string;
   half_episode: string;
   subtitle: string;
   movie: string;
+  folder: string;
   error: string;
   movie_error: string;
+  folder_error: string;
 }
 /** 代理类型 */
 export type ProxyType = ['http', 'https', 'socks5'];
@@ -75,6 +78,8 @@ export interface BangumiManage {
   rename_template: string;
   /** 同上，剧场版专用 */
   movie_rename_template: string;
+  /** 番剧文件夹名模板；只在新番剧首次生成 save_path 时生效 */
+  folder_template: string;
   revision_conflict_policy: TupleToUnion<RevisionConflictPolicy>;
   group_tag: boolean;
   remove_bad_torrent: boolean;
@@ -216,8 +221,10 @@ export const initConfig: Config = {
     enable: true,
     eps_complete: true,
     rename_method: 'normal',
-    rename_template: '{{title}} S{{season}}E{{episode}}',
-    movie_rename_template: '{{title}}',
+    rename_template:
+      '[{{group}}] {{official_title}} S{{season:2}}E{{episode:2}}',
+    movie_rename_template: '[{{group}}] {{official_title}} ({{year}})',
+    folder_template: '{{official_title}} ({{year}})',
     revision_conflict_policy: 'hold',
     group_tag: true,
     remove_bad_torrent: true,

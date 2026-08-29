@@ -378,20 +378,30 @@ class TestGenPathTemplate:
             episode_type=episode_type,
         )
 
-    def test_default_template_matches_pn_byte_for_byte(self):
-        ep = self._ep()
+    def test_default_template_uses_official_title_and_group(self):
         with _templates(DEFAULT_EPISODE_TEMPLATE):
-            templated = Renamer.gen_path(ep, "Bangumi Name", method="template")
-        assert templated == Renamer.gen_path(ep, "Bangumi Name", method="pn")
+            result = Renamer.gen_path(
+                self._ep(),
+                "Bangumi Name",
+                method="template",
+                context=RenameContext(official_title="官方名"),
+            )
+        assert result == "[TestGroup] 官方名 S01E05.mkv"
 
-    def test_default_movie_template_matches_movie_branch(self):
-        ep = self._ep(episode_type="movie")
-        with _templates(DEFAULT_EPISODE_TEMPLATE):
-            templated = Renamer.gen_path(ep, "Bangumi Name", method="template")
-        assert templated == Renamer.gen_path(ep, "Bangumi Name", method="pn")
+    def test_default_movie_template_uses_official_title_and_year(self):
+        with _templates(DEFAULT_EPISODE_TEMPLATE, movie=DEFAULT_MOVIE_TEMPLATE):
+            result = Renamer.gen_path(
+                self._ep(episode_type="movie"),
+                "Bangumi Name",
+                method="template",
+                context=RenameContext(official_title="官方名", year="2024"),
+            )
+        assert result == "[TestGroup] 官方名 (2024).mkv"
 
     def test_custom_layout(self):
-        with _templates("[{{group}}] {{title}} - {{episode}} [{{resolution}}]"):
+        with _templates(
+            "[{{group}}] {{parser_title}} - {{episode:2}} [{{resolution}}]"
+        ):
             result = Renamer.gen_path(
                 self._ep(),
                 "Bangumi Name",
@@ -401,7 +411,9 @@ class TestGenPathTemplate:
         assert result == "[TestGroup] My Anime - 05 [1080p].mkv"
 
     def test_context_fields_are_available(self):
-        with _templates("{{title}} ({{year}}) {{source}} {{subtitle}} E{{episode}}"):
+        with _templates(
+            "{{parser_title}} ({{year}}) {{source}} {{subtitle}} E{{episode:2}}"
+        ):
             result = Renamer.gen_path(
                 self._ep(),
                 "Bangumi Name",
@@ -410,14 +422,38 @@ class TestGenPathTemplate:
             )
         assert result == "My Anime (2019) Baha CHT E05.mkv"
 
+    def test_official_title_comes_from_the_bangumi_row(self):
+        """official_title 只存在于数据库行里，必须经 RenameContext 才能拿到。"""
+        with _templates("{{official_title}} E{{episode:2}}"):
+            result = Renamer.gen_path(
+                self._ep(),
+                "Bangumi Name",
+                method="template",
+                context=RenameContext(official_title="官方名"),
+            )
+        assert result == "官方名 E05.mkv"
+
+    def test_three_title_variables_are_distinct(self):
+        """parser_title / official_title / folder_name 三者来源不同，不能混。"""
+        with _templates(
+            "{{parser_title}}|{{official_title}}|{{folder_name}}|{{episode}}"
+        ):
+            result = Renamer.gen_path(
+                self._ep(),
+                "My Anime (2024)",
+                method="template",
+                context=RenameContext(official_title="官方名"),
+            )
+        assert result == "My Anime|官方名|My Anime (2024)|5.mkv"
+
     def test_missing_context_leaves_variables_empty(self):
         """种子匹配不到 Bangumi 行时 context 为空，不能崩也不能留下空括号。"""
-        with _templates("{{title}} [{{resolution}}] E{{episode}}"):
+        with _templates("{{parser_title}} [{{resolution}}] E{{episode:2}}"):
             result = Renamer.gen_path(self._ep(), "Bangumi Name", method="template")
         assert result == "My Anime E05.mkv"
 
     def test_group_falls_back_to_bangumi_row(self):
-        with _templates("{{title}} [{{group}}] E{{episode}}"):
+        with _templates("{{parser_title}} [{{group}}] E{{episode:2}}"):
             result = Renamer.gen_path(
                 self._ep(group=None),
                 "Bangumi Name",
@@ -427,7 +463,7 @@ class TestGenPathTemplate:
         assert result == "My Anime [RowGroup] E05.mkv"
 
     def test_movie_uses_the_movie_template(self):
-        with _templates(DEFAULT_EPISODE_TEMPLATE, movie="{{title}} ({{year}})"):
+        with _templates(DEFAULT_EPISODE_TEMPLATE, movie="{{parser_title}} ({{year}})"):
             result = Renamer.gen_path(
                 self._ep(episode_type="movie"),
                 "Bangumi Name",
@@ -445,12 +481,12 @@ class TestGenPathTemplate:
             language="zh-tw",
             suffix=".ass",
         )
-        with _templates("{{title}} S{{season}}E{{episode}}"):
+        with _templates("{{parser_title}} S{{season:2}}E{{episode:2}}"):
             result = Renamer.gen_path(sub, "Bangumi Name", method="subtitle_template")
         assert result == "My Anime S01E05.zh-tw.ass"
 
     def test_offset_is_applied(self):
-        with _templates("{{title}} E{{episode}}"):
+        with _templates("{{parser_title}} E{{episode:2}}"):
             result = Renamer.gen_path(
                 self._ep(episode=1),
                 "Bangumi Name",
@@ -489,7 +525,7 @@ class TestGenPathTemplate:
 
     def test_season_pack_names_stay_distinct(self):
         """合集里每一集必须渲染出不同的名字，否则逐个改名会互相覆盖。"""
-        with _templates("{{title}} S{{season}}E{{episode}}"):
+        with _templates("{{parser_title}} S{{season:2}}E{{episode:2}}"):
             names = {
                 Renamer.gen_path(
                     self._ep(episode=n, media_path=f"old{n}.mkv"),
@@ -529,7 +565,7 @@ class TestMethodRenamesFiles:
 
     def test_movie_only_template_still_tags(self):
         """只填了剧场版模板：剧场版会被改名，所以仍要打标。"""
-        with _templates("", movie="{{title}}"):
+        with _templates("", movie="{{parser_title}}"):
             assert Renamer._method_renames_files("template") is True
 
 

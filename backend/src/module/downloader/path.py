@@ -78,7 +78,55 @@ def is_ep(file_path: PathLike[str] | str):
     return file_depth(file_path) <= 2
 
 
+# path_to_bangumi 靠这个正则从 save_path 反推季号；文件夹名撞上它会让整段被
+# 当成 Season 段吃掉，bangumi_name 变空并回退到种子名。
+_SEASON_SEGMENT_RE = re.compile(r"^(S\d+|[Ss]eason \d+)$")
+
+
+def _templated_folder(
+    data: Bangumi | BangumiUpdate | Movie | MovieUpdate,
+) -> str | None:
+    """按用户模板渲染番剧文件夹名；未启用或渲染不可用时返回 None。
+
+    模板只在 ``rename_method == "template"`` 下生效，与文件名模板同进同出。
+    这里做函数内 import：``module.manager`` 的包初始化会拉起 renamer，而
+    renamer 又 import 本模块，模块级 import 会成环。
+    """
+    manage = settings.bangumi_manage
+    if getattr(manage, "rename_method", "") != "template":
+        return None
+    template = str(getattr(manage, "folder_template", "") or "").strip()
+    if not template:
+        return None
+
+    from module.manager.rename_template import build_folder_fields, render_template
+
+    fields = build_folder_fields(
+        parser_title="",
+        official_title=data.official_title,
+        group=getattr(data, "group_name", None),
+        year=str(data.year) if data.year else None,
+        resolution=getattr(data, "dpi", None),
+        source=getattr(data, "source", None),
+        subtitle=getattr(data, "subtitle", None),
+    )
+    # 与文件名相反：文件夹**必须**清洗保留字符，否则 qB 会拆出多级目录或
+    # 静默截断 (#721)。gen_path 那边刻意不清洗，两处不能统一。
+    folder = sanitize_path_fragment(render_template(template, fields))
+    if not folder or _SEASON_SEGMENT_RE.match(folder):
+        logger.warning(
+            "Folder template rendered %r for %s; falling back to the default name",
+            folder,
+            data.official_title,
+        )
+        return None
+    return folder
+
+
 def _media_folder(data: Bangumi | BangumiUpdate | Movie | MovieUpdate) -> str:
+    templated = _templated_folder(data)
+    if templated:
+        return templated
     title = data.official_title or "Unknown Bangumi"
     folder = sanitize_path_fragment(f"{title} ({data.year})" if data.year else title)
     if folder:

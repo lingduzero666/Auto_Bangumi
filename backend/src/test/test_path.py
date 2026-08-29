@@ -324,3 +324,84 @@ class TestIsEp:
         assert file_depth("file.mkv") == 1
         assert file_depth("a/file.mkv") == 2
         assert file_depth("a/b/c/file.mkv") == 4
+
+
+# ---------------------------------------------------------------------------
+# 文件夹命名模板
+# ---------------------------------------------------------------------------
+
+
+class TestFolderTemplate:
+    """番剧文件夹名的自定义模板。
+
+    只在 ``rename_method == "template"`` 下生效，且**只影响新番剧首次生成
+    save_path**——改模板不会移动已有番剧的目录（那需要 move_torrent + 重建
+    qB 规则，见 manager/torrent.py:171）。
+    """
+
+    def _path(self, bangumi, *, method="template", template="{{official_title}}"):
+        with patch("module.downloader.path.settings") as mock_settings:
+            mock_settings.downloader.path = "/downloads/Bangumi"
+            mock_settings.bangumi_manage.rename_method = method
+            mock_settings.bangumi_manage.folder_template = template
+            return gen_save_path(bangumi)
+
+    def _folder(self, result: str) -> str:
+        """取番剧文件夹那一段，绕开 Windows/POSIX 分隔符差异。"""
+        parts = [p for p in result.replace("\\", "/").split("/") if p]
+        return parts[-2] if parts[-1].startswith("Season") else parts[-1]
+
+    def test_custom_template_is_used(self):
+        bangumi = make_bangumi(
+            official_title="My Anime", year="2024", season=2, group_name="SubGroup"
+        )
+        result = self._path(bangumi, template="[{{group}}] {{official_title}}")
+        assert self._folder(result) == "[SubGroup] My Anime"
+
+    def test_season_is_not_available_in_folder_templates(self):
+        """gen_save_path 已经单独建了 "Season N" 子目录，季度写进番剧文件夹名
+        只会重复一遍——所以 season 不在文件夹变量集里，渲染成空。"""
+        bangumi = make_bangumi(official_title="My Anime", season=2)
+        result = self._path(bangumi, template="{{official_title}} S{{season}}")
+        assert self._folder(result) == "My Anime S"
+
+    def test_reserved_characters_are_sanitized(self):
+        """与文件名相反：文件夹**必须**清洗，否则 qB 会拆出多级目录 (#721)。"""
+        bangumi = make_bangumi(official_title="Re:Zero", year="2016", season=1)
+        result = self._path(bangumi, template="{{official_title}} ({{year}})")
+        assert self._folder(result) == "Re Zero (2016)"
+
+    def test_empty_year_leaves_no_empty_parens(self):
+        bangumi = make_bangumi(official_title="My Anime", year=None, season=1)
+        result = self._path(bangumi, template="{{official_title}} ({{year}})")
+        assert self._folder(result) == "My Anime"
+
+    def test_ignored_unless_rename_method_is_template(self):
+        """模板与文件名模板同进同出，没选 template 就完全不生效。"""
+        bangumi = make_bangumi(official_title="My Anime", year="2024", season=1)
+        result = self._path(bangumi, method="pn", template="{{official_title}}")
+        assert self._folder(result) == "My Anime (2024)"
+
+    def test_empty_template_falls_back_to_the_default_layout(self):
+        bangumi = make_bangumi(official_title="My Anime", year="2024", season=1)
+        result = self._path(bangumi, template="")
+        assert self._folder(result) == "My Anime (2024)"
+
+    def test_season_like_folder_is_rejected(self):
+        """渲染成 "S2" 会被 path_to_bangumi 当成 Season 段吃掉，bangumi_name
+        变空并回退到种子名——必须挡住。"""
+        bangumi = make_bangumi(official_title="2", year="2024", season=2)
+        result = self._path(bangumi, template="S{{official_title}}")
+        # 渲染出 "S2" 被拒，回退到默认命名
+        assert self._folder(result) == "2 (2024)"
+
+    def test_round_trips_through_path_to_bangumi(self):
+        """自定义文件夹名必须还能被反推出来——重命名侧的 {{folder_name}}
+        就是从磁盘路径反推的。"""
+        bangumi = make_bangumi(official_title="My Anime", year="2024", season=3)
+        result = self._path(bangumi, template="{{official_title}} [{{year}}]")
+        with patch("module.downloader.path.settings") as mock_settings:
+            mock_settings.downloader.path = "/downloads/Bangumi"
+            name, season = path_to_bangumi(result)
+        assert name == "My Anime [2024]"
+        assert season == 3

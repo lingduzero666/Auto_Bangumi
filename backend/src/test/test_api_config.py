@@ -808,44 +808,52 @@ class TestRenamePreview:
         response = authed_client.post(
             self._URL,
             json={
-                "template": "{{title}} S{{season}}E{{episode}}",
-                "movie_template": "{{title}}",
+                "template": "{{parser_title}} S{{season:2}}E{{episode:2}}",
+                "movie_template": "{{parser_title}}",
             },
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["episode"] == "刀剑神域 S02E05.mkv"
-        assert body["movie"] == "游戏人生 零.mkv"
+        assert body["episode"] == (
+            "刀剑神域 (2012)/Season 2/Sword Art Online S02E05.mkv"
+        )
+        assert body["movie"] == "游戏人生 零 (2017)/游戏人生 零.mkv"
+        assert body["folder"] == "刀剑神域 (2012)/"
         assert body["error"] == ""
 
     def test_half_episode_and_subtitle_samples(self, authed_client):
         response = authed_client.post(
-            self._URL, json={"template": "{{title}} S{{season}}E{{episode}}"}
+            self._URL, json={"template": "{{parser_title}} S{{season:2}}E{{episode:2}}"}
         )
         body = response.json()
         # 总集篇等半集保留小数 (#667)
-        assert body["half_episode"] == "刀剑神域 S02E12.5.mkv"
+        assert body["half_episode"] == (
+            "刀剑神域 (2012)/Season 2/Sword Art Online S02E12.5.mkv"
+        )
         # 字幕的语言段固定插在扩展名之前
-        assert body["subtitle"] == "刀剑神域 S02E05.zh-tw.ass"
+        assert body["subtitle"] == (
+            "刀剑神域 (2012)/Season 2/Sword Art Online S02E05.zh-tw.ass"
+        )
 
     def test_all_variables_render(self, authed_client):
         response = authed_client.post(
             self._URL,
             json={
                 "template": (
-                    "[{{group}}] {{bangumi_name}} S{{season}}E{{episode}} "
+                    "[{{group}}] {{folder_name}} S{{season:2}}E{{episode:2}} "
                     "[{{resolution}}][{{source}}][{{subtitle}}][{{year}}]"
                 )
             },
         )
         assert response.json()["episode"] == (
-            "[Lilith-Raws] 刀剑神域 (2012) S02E05 [1080p][Baha][CHT][2012].mkv"
+            "刀剑神域 (2012)/Season 2/"
+            "[ANi] 刀剑神域 (2012) S02E05 [1080p][Baha][CHT][2012].mkv"
         )
 
     def test_validation_error_comes_back_as_200(self, authed_client):
         """半截输入不该弹网络错误——校验结果放响应体里。"""
         response = authed_client.post(
-            self._URL, json={"template": "{{title}}/{{episode}}"}
+            self._URL, json={"template": "{{parser_title}}/{{episode:2}}"}
         )
         assert response.status_code == 200
         body = response.json()
@@ -853,7 +861,7 @@ class TestRenamePreview:
         assert body["episode"] == ""
 
     def test_missing_episode_variable_is_rejected(self, authed_client):
-        response = authed_client.post(self._URL, json={"template": "{{title}}"})
+        response = authed_client.post(self._URL, json={"template": "{{parser_title}}"})
         body = response.json()
         assert "episode" in body["error"]
         assert body["episode"] == ""
@@ -861,25 +869,76 @@ class TestRenamePreview:
     def test_movie_template_does_not_require_episode(self, authed_client):
         response = authed_client.post(
             self._URL,
-            json={"template": "{{title}} E{{episode}}", "movie_template": "{{title}}"},
+            json={
+                "template": "{{parser_title}} E{{episode:2}}",
+                "movie_template": "{{parser_title}}",
+            },
         )
         body = response.json()
         assert body["movie_error"] == ""
-        assert body["movie"] == "游戏人生 零.mkv"
+        assert body["movie"] == "游戏人生 零 (2017)/游戏人生 零.mkv"
 
     def test_empty_template_yields_empty_preview_without_error(self, authed_client):
         response = authed_client.post(self._URL, json={"template": ""})
         body = response.json()
-        assert body == {
-            "episode": "",
-            "half_episode": "",
-            "subtitle": "",
-            "movie": "",
-            "error": "",
-            "movie_error": "",
-        }
+        assert body["episode"] == ""
+        assert body["movie"] == ""
+        assert body["error"] == ""
+        assert body["movie_error"] == ""
+        assert body["folder_error"] == ""
+        # 文件夹模板留空时回退到默认，示例仍然显示
+        assert body["folder"] == "刀剑神域 (2012)/"
 
     @patch("module.security.api.DEV_AUTH_BYPASS", False)
     def test_requires_auth(self, unauthed_client):
-        response = unauthed_client.post(self._URL, json={"template": "{{episode}}"})
+        response = unauthed_client.post(self._URL, json={"template": "{{episode:2}}"})
         assert response.status_code == 401
+
+    def test_custom_folder_template_changes_all_previews(self, authed_client):
+        response = authed_client.post(
+            self._URL,
+            json={
+                "template": "{{parser_title}} E{{episode:2}}",
+                "movie_template": "{{parser_title}}",
+                "folder_template": "[{{group}}] {{official_title}}",
+            },
+        )
+        body = response.json()
+        assert body["folder"] == "[ANi] 刀剑神域/"
+        assert body["episode"] == ("[ANi] 刀剑神域/Season 2/Sword Art Online E05.mkv")
+        # 剧场版是扁平布局，没有 Season 子目录
+        assert body["movie"] == ("[VCB-Studio] 游戏人生 零/游戏人生 零.mkv")
+
+    def test_folder_reserved_characters_are_sanitized(self, authed_client):
+        """与文件名相反，文件夹**必须**清洗保留字符，否则 qB 会拆出多级目录。"""
+        response = authed_client.post(
+            self._URL,
+            json={
+                "template": "{{parser_title}} E{{episode}}",
+                "folder_template": "{{official_title}}: {{year}}",
+            },
+        )
+        body = response.json()
+        assert body["folder_error"] == ""
+        assert body["folder"] == "刀剑神域 2012/"
+
+    def test_folder_template_rejects_file_only_variables(self, authed_client):
+        """文件夹在添加种子时生成，那一刻没有解析过的文件。"""
+        for bad in (
+            "{{parser_title}}",
+            "{{episode}}",
+            "{{folder_name}}",
+            "{{season}}",
+        ):
+            response = authed_client.post(
+                self._URL,
+                json={
+                    "template": "{{parser_title}} E{{episode}}",
+                    "folder_template": bad,
+                },
+            )
+            body = response.json()
+            assert "未知变量" in body["folder_error"], bad
+            # 文件夹模板出错时，依赖它的文件路径示例一并隐藏
+            assert body["episode"] == ""
+            assert body["folder"] == ""

@@ -67,6 +67,7 @@
       "method": "Rename Method",
       "rename_template": "Episode Name Template",
       "rename_template_example": "Example",
+      "rename_template_folder": "Folder Name Template",
       "rename_template_hint": "The extension is appended automatically, and subtitles keep their language suffix. Template changes only affect episodes downloaded from now on; files already organised are never renamed.",
       "rename_template_movie": "Movie Name Template",
       "rename_template_variables": "Available variables",
