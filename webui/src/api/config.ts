@@ -1,4 +1,4 @@
-import type { Config, LLMProviderId } from '#/config';
+import type { Config, LLMProviderId, RenamePreview } from '#/config';
 import type { ApiSuccess } from '#/api';
 
 export const apiConfig = {
@@ -37,5 +37,22 @@ export const apiConfig = {
       { silent: true }
     );
     return data.models;
+  },
+
+  /**
+   * 按模板渲染一组示例文件名。
+   * 渲染在后端进行，与真正的重命名走同一套函数，所以示例不会与实际结果不符。
+   * 模板非法时 error/movie_error 带回错误文案，HTTP 仍是 200。
+   */
+  async previewRenameTemplate(payload: {
+    template: string;
+    movie_template: string;
+  }) {
+    const { data } = await axios.post<RenamePreview>(
+      'api/v1/config/rename/preview',
+      payload,
+      { silent: true }
+    );
+    return data;
   },
 };
