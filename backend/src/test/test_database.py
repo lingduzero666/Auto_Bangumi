@@ -979,6 +979,81 @@ class TestSearchByBangumiId:
         assert await db.search_by_bangumi_id(999) == []
 
 
+class TestSearchHomepagesByBangumiIds:
+    """Tests for TorrentDatabase.search_homepages_by_bangumi_ids.
+
+    日历刷新用它一次性拿到每部番剧的 Mikan 剧集页与订阅归属，避免每部一次查询。
+    """
+
+    async def test_returns_rss_id_and_homepage(self, db_session):
+        db = TorrentDatabase(db_session)
+        await _ensure_bangumi(db_session, 31)
+        await db.add(
+            Torrent(
+                name="ep01",
+                url="https://example.com/ep01",
+                bangumi_id=31,
+                rss_id=7,
+                homepage="https://mikanani.me/Home/Episode/a",
+            )
+        )
+
+        assert await db.search_homepages_by_bangumi_ids([31]) == {
+            31: (7, "https://mikanani.me/Home/Episode/a")
+        }
+
+    async def test_keeps_the_most_recent_torrent(self, db_session):
+        """老种子的剧集页更可能已被 Mikan 清理成 404，取 id 最大的那条。"""
+        db = TorrentDatabase(db_session)
+        await _ensure_bangumi(db_session, 32)
+        for name in ("old", "new"):
+            await db.add(
+                Torrent(
+                    name=name,
+                    url=f"https://example.com/{name}",
+                    bangumi_id=32,
+                    homepage=f"https://mikanani.me/Home/Episode/{name}",
+                )
+            )
+
+        result = await db.search_homepages_by_bangumi_ids([32])
+        assert result[32][1] == "https://mikanani.me/Home/Episode/new"
+
+    async def test_skips_torrents_without_a_homepage(self, db_session):
+        """非 Mikan 源的种子 homepage 为空，不该占用番剧的条目。"""
+        db = TorrentDatabase(db_session)
+        await _ensure_bangumi(db_session, 33)
+        await _ensure_bangumi(db_session, 34)
+        await db.add(
+            Torrent(name="a", url="https://example.com/a", bangumi_id=33, homepage=None)
+        )
+        await db.add(
+            Torrent(name="b", url="https://example.com/b", bangumi_id=34, homepage="")
+        )
+
+        assert await db.search_homepages_by_bangumi_ids([33, 34]) == {}
+
+    async def test_only_returns_requested_ids(self, db_session):
+        db = TorrentDatabase(db_session)
+        await _ensure_bangumi(db_session, 35)
+        await _ensure_bangumi(db_session, 36)
+        for bangumi_id in (35, 36):
+            await db.add(
+                Torrent(
+                    name=str(bangumi_id),
+                    url=f"https://example.com/{bangumi_id}",
+                    bangumi_id=bangumi_id,
+                    homepage="https://mikanani.me/Home/Episode/x",
+                )
+            )
+
+        assert list(await db.search_homepages_by_bangumi_ids([35])) == [35]
+
+    async def test_empty_input_returns_empty_dict(self, db_session):
+        db = TorrentDatabase(db_session)
+        assert await db.search_homepages_by_bangumi_ids([]) == {}
+
+
 class TestApplyOffset:
     """Tests for BangumiDatabase.apply_offset."""
 

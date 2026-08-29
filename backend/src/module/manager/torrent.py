@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from urllib.parse import urlparse
 
 from module.conf import settings
 from module.database import Database
@@ -10,8 +12,14 @@ from module.models import Bangumi, BangumiUpdate, ResponseModel
 from module.parser import TitleParser
 from module.parser.analyser.bgm_calendar import fetch_bgm_calendar, match_weekday
 from module.parser.analyser.tmdb_parser import tmdb_parser
+from module.parser.analyser.weekday_source import parser_weekday
 
 logger = logging.getLogger(__name__)
+
+# 日历刷新时并发抓 Mikan 主页 / TMDB 的上限。取 5 而不是更高：Mikan 是社区
+# 小站，TMDB 内置共享 key 本来就有限流问题（见 models/config.py 的 #975），
+# 而这是 24h 一跳的后台任务，慢一点无所谓。
+CALENDAR_PARSER_CONCURRENCY = 5
 
 
 class TorrentManager:
@@ -233,35 +241,152 @@ class TorrentManager:
             msg_zh="刷新海报链接成功。",
         )
 
-    async def refresh_calendar(self):
-        """Fetch Bangumi.tv calendar and update air_weekday for all bangumi."""
+    async def _weekdays_from_bgm(self, targets: list[Bangumi]) -> dict[int, int]:
+        """One /calendar request, then pure in-memory title matching."""
         calendar_items = await fetch_bgm_calendar()
         if not calendar_items:
-            return ResponseModel(
-                status_code=500,
-                status=False,
-                msg_en="Failed to fetch calendar data from Bangumi.tv.",
-                msg_zh="从 Bangumi.tv 获取放送表失败。",
-            )
-        bangumis = await self.db.bangumi.search_all()
-        updated = 0
-        for bangumi in bangumis:
-            if bangumi.deleted or bangumi.weekday_locked:
-                continue
+            logger.warning("Calendar refresh: Bangumi.tv returned no data.")
+            return {}
+        resolved = {}
+        for bangumi in targets:
             weekday = match_weekday(
                 bangumi.official_title, bangumi.title_raw, calendar_items
             )
+            if weekday is not None:
+                resolved[bangumi.id] = weekday
+        return resolved
+
+    async def _weekdays_from_parsers(self, targets: list[Bangumi]) -> dict[int, int]:
+        """One lookup per bangumi, following each subscription's parser type.
+
+        Archived anime are skipped here but not on the bgm path: they no longer
+        appear on the calendar (#1077), so spending a Mikan/TMDB request each is
+        pure waste — whereas the bgm request is already paid for and its
+        matching is free, and skipping there would show a stale weekday between
+        un-archiving and the next tick.
+        """
+        candidates = [b for b in targets if not b.archived]
+        if not candidates:
+            return {}
+        rss_items = await self.db.rss.search_all()
+        rss_by_id = {item.id: item for item in rss_items}
+        rss_by_url = {item.url: item for item in rss_items}
+        homepages = await self.db.torrent.search_homepages_by_bangumi_ids(
+            [b.id for b in candidates]
+        )
+        semaphore = asyncio.Semaphore(CALENDAR_PARSER_CONCURRENCY)
+
+        def parser_of(bangumi: Bangumi, rss_id: int | None) -> str | None:
+            # Torrent.rss_id is a real foreign key, so prefer it; Bangumi.rss_link
+            # is a plain string and search subscriptions store a RSS/Search URL
+            # that is not in the rssitem table at all.
+            item = (
+                rss_by_id.get(rss_id) if rss_id is not None else None
+            ) or rss_by_url.get(bangumi.rss_link)
+            if item is not None:
+                return item.parser
+            if bangumi.rss_link:
+                return "mikan" if "mikan" in urlparse(bangumi.rss_link).netloc else None
+            return None
+
+        async def resolve(bangumi: Bangumi) -> tuple[int, int | None]:
+            rss_id, homepage = homepages.get(bangumi.id, (None, None))
+            async with semaphore:
+                return bangumi.id, await parser_weekday(
+                    parser=parser_of(bangumi, rss_id),
+                    official_title=bangumi.official_title,
+                    episode_type=bangumi.episode_type,
+                    episode_homepage=homepage,
+                )
+
+        results = await asyncio.gather(
+            *(resolve(b) for b in candidates), return_exceptions=True
+        )
+        resolved = {}
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.warning("Calendar refresh: parser lookup failed: %s", result)
+                continue
+            bangumi_id, weekday = result
+            if weekday is not None:
+                resolved[bangumi_id] = weekday
+        return resolved
+
+    async def refresh_calendar(self):
+        """Refresh air_weekday for every bangumi that isn't manually locked.
+
+        The configured source is asked first; whatever it cannot resolve falls
+        through to the other one. With the default bgm-first setting and a full
+        match, the parser path never fires a single request.
+        """
+        # Read once: a config reload mid-refresh must not flip primary/fallback
+        primary = settings.rss_parser.weekday_source
+        sources = {
+            "bgm": self._weekdays_from_bgm,
+            "parser": self._weekdays_from_parsers,
+        }
+        fallback = "parser" if primary == "bgm" else "bgm"
+
+        bangumis = await self.db.bangumi.search_all()
+        targets = [b for b in bangumis if not b.deleted and not b.weekday_locked]
+        if not targets:
+            return ResponseModel(
+                status_code=200,
+                status=True,
+                msg_en="No bangumi needs a calendar refresh.",
+                msg_zh="没有需要刷新放送表的番剧。",
+            )
+
+        resolved = await sources[primary](targets)
+        counts = {primary: len(resolved), fallback: 0}
+        remaining = [b for b in targets if b.id not in resolved]
+        if remaining:
+            extra = await sources[fallback](remaining)
+            counts[fallback] = len(extra)
+            resolved.update(extra)
+
+        changed = []
+        for bangumi in targets:
+            weekday = resolved.get(bangumi.id)
             if weekday is not None and weekday != bangumi.air_weekday:
                 bangumi.air_weekday = weekday
-                updated += 1
-        if updated > 0:
-            await self.db.bangumi.update_all(bangumis)
-        logger.info(f"Calendar refresh: updated {updated} bangumi.")
+                changed.append(bangumi)
+        if changed:
+            await self.db.bangumi.update_all(changed)
+
+        unresolved = len(targets) - len(resolved)
+        logger.info(
+            "Calendar refresh (%s first): updated %s, resolved by parser %s / "
+            "bgm.tv %s, %s unresolved.",
+            primary,
+            len(changed),
+            counts["parser"],
+            counts["bgm"],
+            unresolved,
+        )
+        if not resolved:
+            # Only a total failure is an error: a partial result still moved the
+            # calendar forward, and reporting 500 would make calendar_tick log a
+            # daily "refresh failed" for users whose fallback source is blocked.
+            return ResponseModel(
+                status_code=500,
+                status=False,
+                msg_en="Failed to resolve any air weekday from Bangumi.tv or the parsers.",
+                msg_zh="未能从 Bangumi.tv 或解析器获取到任何放送星期。",
+            )
         return ResponseModel(
             status_code=200,
             status=True,
-            msg_en=f"Calendar refreshed. Updated {updated} anime.",
-            msg_zh=f"放送表已刷新，更新了 {updated} 部番剧。",
+            msg_en=(
+                f"Calendar refreshed. Updated {len(changed)} anime "
+                f"(parser {counts['parser']}, Bangumi.tv {counts['bgm']}); "
+                f"{unresolved} unresolved."
+            ),
+            msg_zh=(
+                f"放送表已刷新，更新了 {len(changed)} 部番剧"
+                f"（解析器 {counts['parser']} 部、Bangumi.tv {counts['bgm']} 部），"
+                f"{unresolved} 部未匹配。"
+            ),
         )
 
     async def search_all_bangumi(self):

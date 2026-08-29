@@ -154,6 +154,31 @@ async def _fetch_bangumi_page(
     return _cache_bangumi_page(url, result)
 
 
+async def mikan_weekday(episode_homepage: str) -> int | None:
+    """只取放送星期，不下载海报。供日历刷新按番剧批量取数时使用。
+
+    入库时 ``mikan_parser`` 已经抓过的番剧直接命中缓存，一个请求都不发；否则
+    只抓剧集页与番剧主页两个 HTML。与 ``mikan_parser`` 相反，这里**绝不抛
+    异常**：调用方是批量任务，一部番的页面变动不该中断整批。
+    """
+    cached = _mikan_cache.get(episode_homepage)
+    if cached is not None:
+        return cached.air_weekday
+    try:
+        async with RequestContent() as req:
+            content = await req.get_html(episode_homepage)
+            anchor = BeautifulSoup(content or "", "html.parser").select_one(
+                'p.bangumi-title a[href^="/Home/Bangumi/"]'
+            )
+            url = _bangumi_page_url(episode_homepage, anchor)
+            if not url:
+                return None
+            return (await _fetch_bangumi_page(url, req))[1]
+    except Exception as e:  # noqa: BLE001 - 见 docstring
+        logger.debug("Failed to read Mikan weekday from %s: %s", episode_homepage, e)
+        return None
+
+
 async def mikan_parser(homepage: str) -> MikanInfo:
     if homepage in _mikan_cache:
         return _mikan_cache[homepage]
