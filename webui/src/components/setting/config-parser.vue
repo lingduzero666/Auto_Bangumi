@@ -20,6 +20,18 @@ const engineOptions = computed<SelectItem[]>(() => [
     value: 'tokenizer',
   },
 ]);
+const weekdaySourceOptions = computed<SelectItem[]>(() => [
+  {
+    id: 1,
+    label: t('config.parser_set.weekday_source_bgm'),
+    value: 'bgm',
+  },
+  {
+    id: 2,
+    label: t('config.parser_set.weekday_source_parser'),
+    value: 'parser',
+  },
+]);
 
 const items: SettingItem<RssParser>[] = [
   {
@@ -52,6 +64,13 @@ const items: SettingItem<RssParser>[] = [
         :description="t('config.parser_set.engine_hint')"
         type="select"
         :prop="{ items: engineOptions }"
+      ></ab-setting>
+      <ab-setting
+        v-model:data="parser.weekday_source"
+        :label="() => t('config.parser_set.weekday_source')"
+        :description="t('config.parser_set.weekday_source_hint')"
+        type="select"
+        :prop="{ items: weekdaySourceOptions }"
       ></ab-setting>
       <ab-setting
         v-for="i in items"

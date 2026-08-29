@@ -61,6 +61,16 @@ class RSSParser(BaseModel):
         default="classic",
         description="Title parser engine (classic or tokenizer Preview)",
     )
+    # 默认沿用 bgm.tv，升级不改变既有行为；bgm.tv 不可达（如被墙）时切成 parser
+    weekday_source: Literal["bgm", "parser"] = Field(
+        default="bgm",
+        description=(
+            "Preferred source for the calendar air weekday. 'bgm' queries "
+            "bgm.tv /calendar first; 'parser' follows each anime's RSS parser "
+            "— the Mikan bangumi homepage for mikan/mix, TMDB air dates for "
+            "tmdb. The other source still serves as a fallback."
+        ),
+    )
 
 
 class BangumiManage(BaseModel):

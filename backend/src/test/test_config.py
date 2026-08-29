@@ -48,6 +48,7 @@ class TestConfigDefaults:
         assert config.rss_parser.enable is True
         assert config.rss_parser.language == "zh"
         assert config.rss_parser.engine == "classic"
+        assert config.rss_parser.weekday_source == "bgm"
         assert "720" in config.rss_parser.filter
 
     @pytest.mark.parametrize("engine", ["classic", "tokenizer"])
@@ -60,6 +61,17 @@ class TestConfigDefaults:
         """Unknown engines are rejected instead of silently falling back."""
         with pytest.raises(ValueError):
             RSSParser.model_validate({"engine": "preview"})
+
+    @pytest.mark.parametrize("source", ["bgm", "parser"])
+    def test_rss_parser_accepts_supported_weekday_sources(self, source):
+        """RSSParser accepts both air-weekday source identifiers."""
+        parser = RSSParser.model_validate({"weekday_source": source})
+        assert parser.weekday_source == source
+
+    def test_rss_parser_rejects_unknown_weekday_source(self):
+        """Unknown sources are rejected instead of silently falling back."""
+        with pytest.raises(ValueError):
+            RSSParser.model_validate({"weekday_source": "mikan"})
 
     def test_bangumi_manage_defaults(self):
         """BangumiManage has correct default values."""
@@ -308,6 +320,21 @@ class TestSettingsLoad:
             s.load()
 
         assert s.rss_parser.engine == "classic"
+
+    def test_load_legacy_config_defaults_weekday_source_to_bgm(self, tmp_path):
+        """A config written before weekday_source existed keeps bgm.tv."""
+        config_data = Config().dict()
+        config_data["rss_parser"].pop("weekday_source", None)
+        config_file = tmp_path / "config.json"
+        with open(config_file, "w") as f:
+            json.dump(config_data, f)
+
+        with patch("module.conf.config.CONFIG_PATH", config_file):
+            s = Settings.__new__(Settings)
+            Config.__init__(s)
+            s.load()
+
+        assert s.rss_parser.weekday_source == "bgm"
 
     def test_save_writes_json(self, tmp_path):
         """settings.save() writes valid JSON to CONFIG_PATH."""
