@@ -130,6 +130,7 @@ export const mockConfig = {
     engine: 'classic',
     filter: ['720', '\\d+-\\d'],
     language: 'zh',
+    weekday_source: 'bgm',
   },
   bangumi_manage: {
     enable: true,

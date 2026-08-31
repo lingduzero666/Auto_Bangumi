@@ -81,11 +81,18 @@ const sections: ConfigSection[] = [
       'language',
       'filter',
       'exclude',
+      'weekday',
+      'calendar',
+      'bgm',
+      'bangumi.tv',
     ],
     keywordKeys: [
       'config.parser_set.engine',
       'config.parser_set.engine_classic',
       'config.parser_set.engine_tokenizer',
+      'config.parser_set.weekday_source',
+      'config.parser_set.weekday_source_bgm',
+      'config.parser_set.weekday_source_parser',
     ],
   },
   {

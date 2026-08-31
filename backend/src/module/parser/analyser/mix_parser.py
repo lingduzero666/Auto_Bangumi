@@ -32,6 +32,7 @@ class MixResult:
     year: str | None = None
     season: int | None = None
     poster_link: str | None = None
+    air_weekday: int | None = None
 
 
 async def _fetch_mikan(homepage: str | None) -> MikanInfo | None:
@@ -65,6 +66,7 @@ async def mix_parser(
     mikan_title = mikan_info.official_title if mikan_info else None
     mikan_poster = mikan_info.poster_link if mikan_info else None
     air_date = mikan_info.air_date if mikan_info else None
+    mikan_weekday = mikan_info.air_weekday if mikan_info else None
 
     query_title = mikan_title or fallback_title
     if not query_title:
@@ -79,6 +81,7 @@ async def mix_parser(
         return MixResult(
             official_title=mikan_title or None,
             poster_link=mikan_poster or None,
+            air_weekday=mikan_weekday,
         )
 
     # 剧场版没有季度概念；剧集优先用日期匹配到的季号，其次是 TMDB 的季数。
@@ -93,4 +96,8 @@ async def mix_parser(
         season=season,
         # 海报优先用 TMDB 的，TMDB 没有再退回 Mikan 抓到的
         poster_link=tmdb_info.poster_link or mikan_poster or None,
+        # 星期反过来：Mikan 主页上明写的是站点权威值，TMDB 那边是推算的
+        air_weekday=(
+            mikan_weekday if mikan_weekday is not None else tmdb_info.air_weekday
+        ),
     )

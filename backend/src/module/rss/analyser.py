@@ -7,6 +7,7 @@ from module.network import RequestContent
 from module.parser import TitleParser
 from module.parser.analyser import mix_parser
 from module.parser.analyser.selector import parser_engine_snapshot
+from module.parser.analyser.weekday_source import parser_weekday
 
 from .engine import RSSEngine
 
@@ -78,6 +79,11 @@ class RSSAnalyser:
         torrent: Torrent,
         fetch_poster: bool = True,
     ):
+        # 放送星期只在「优先解析器」模式下顺手写入，且只写解析器手上已有的值：
+        # 入库路径不回退 bgm.tv，拿不到就留空，交给日历的定时刷新去补。
+        want_weekday = (
+            fetch_poster and settings.rss_parser.weekday_source == "parser"
+        ) and bangumi.episode_type != "movie"
         if not fetch_poster:
             pass
         elif rss.parser == "mikan":
@@ -94,7 +100,12 @@ class RSSAnalyser:
                     bangumi.poster_link = mikan_info.poster_link
                     if mikan_info.official_title:
                         bangumi.official_title = mikan_info.official_title
+                    if want_weekday and mikan_info.air_weekday is not None:
+                        bangumi.air_weekday = mikan_info.air_weekday
         elif rss.parser == "tmdb":
+            # TMDB 缓存以查询词为键，而下面会把 official_title 覆盖成 TMDB 的
+            # 标准名——先留住原查询词，星期查询才能命中缓存、不多发一次请求
+            query_title = bangumi.official_title
             tmdb_title, season, year, poster_link = await TitleParser.tmdb_parser(
                 bangumi.official_title,
                 bangumi.season,
@@ -105,6 +116,14 @@ class RSSAnalyser:
             bangumi.year = year
             bangumi.season = season
             bangumi.poster_link = poster_link
+            if want_weekday:
+                weekday = await parser_weekday(
+                    parser=rss.parser,
+                    official_title=query_title,
+                    episode_type=bangumi.episode_type,
+                )
+                if weekday is not None:
+                    bangumi.air_weekday = weekday
         elif rss.parser == "mix":
             # mix 自己处理全部降级，空字段一律表示「没拿到，别覆盖」
             mix_result = await mix_parser(
@@ -121,6 +140,8 @@ class RSSAnalyser:
                 bangumi.season = mix_result.season
             if mix_result.poster_link:
                 bangumi.poster_link = mix_result.poster_link
+            if want_weekday and mix_result.air_weekday is not None:
+                bangumi.air_weekday = mix_result.air_weekday
         else:
             pass
         if bangumi.official_title:

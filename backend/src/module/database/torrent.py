@@ -111,6 +111,37 @@ class TorrentDatabase:
                 grouped[torrent.bangumi_id].append(torrent)
         return dict(grouped)
 
+    async def search_homepages_by_bangumi_ids(
+        self, bangumi_ids: list[int]
+    ) -> dict[int, tuple[int | None, str]]:
+        """Batch lookup ``bangumi_id -> (rss_id, homepage)`` for the calendar.
+
+        The air-weekday lookup needs the Mikan episode page (the only place a
+        homepage is stored) and the subscription's parser type, for every
+        bangumi at once rather than a query each.
+
+        Keeps the highest-id (most recent) torrent per bangumi: Mikan prunes
+        old episode pages, so an old torrent's homepage is more likely a 404.
+        """
+        if not bangumi_ids:
+            return {}
+        result = await self.session.execute(
+            select(Torrent.bangumi_id, Torrent.rss_id, Torrent.homepage)
+            .where(
+                and_(
+                    Torrent.bangumi_id.in_(bangumi_ids),  # type: ignore[union-attr]
+                    Torrent.homepage.is_not(None),  # type: ignore[union-attr]
+                    Torrent.homepage != "",
+                )
+            )
+            .order_by(Torrent.id)  # type: ignore[arg-type]
+        )
+        homepages: dict[int, tuple[int | None, str]] = {}
+        for bangumi_id, rss_id, homepage in result.all():
+            if bangumi_id is not None:
+                homepages[bangumi_id] = (rss_id, homepage)
+        return homepages
+
     async def delete_by_bangumi_id(self, bangumi_id: int) -> int:
         """Delete all torrent records associated with a bangumi.
 

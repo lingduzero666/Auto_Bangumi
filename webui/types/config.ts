@@ -6,6 +6,8 @@ export type DownloaderType = ['qbittorrent', 'aria2'];
 export type RssParserLang = ['zh', 'en', 'jp'];
 /** RSS 标题解析引擎（tokenizer 仍处于 Preview） */
 export type RssParserEngine = ['classic', 'tokenizer'];
+/** 日历放送星期的首选数据源，另一个来源仍作兜底 */
+export type WeekdaySource = ['bgm', 'parser'];
 /** 重命名方式 */
 export type RenameMethod = ['normal', 'pn', 'advance', 'none', 'template'];
 /** 修订版文件名冲突处理策略 */
@@ -69,6 +71,7 @@ export interface RssParser {
   engine: TupleToUnion<RssParserEngine>;
   filter: Array<string>;
   language: TupleToUnion<RssParserLang>;
+  weekday_source: TupleToUnion<WeekdaySource>;
 }
 export interface BangumiManage {
   enable: boolean;
@@ -216,6 +219,7 @@ export const initConfig: Config = {
     engine: 'classic',
     filter: [],
     language: 'zh',
+    weekday_source: 'bgm',
   },
   bangumi_manage: {
     enable: true,

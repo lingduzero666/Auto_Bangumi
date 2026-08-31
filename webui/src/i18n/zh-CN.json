@@ -121,7 +121,11 @@
       "title": "解析设置",
       "token": "Token",
       "type": "解析类型",
-      "url": "自定义网址"
+      "url": "自定义网址",
+      "weekday_source": "放送星期数据源",
+      "weekday_source_bgm": "优先 Bangumi.tv",
+      "weekday_source_parser": "优先解析器",
+      "weekday_source_hint": "决定日历的放送星期先查哪个来源，首选来源匹配不到的番剧仍会用另一个来源兜底。解析器按每条订阅自己的解析类型取数：mikan / mix 读番剧主页的「放送日期」，tmdb 由播出日期推算，其余类型没有解析器来源。国内访问 bgm.tv 受限时建议选解析器优先。"
     },
     "proxy_set": {
       "enable": "启用",

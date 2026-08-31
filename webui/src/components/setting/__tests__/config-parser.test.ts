@@ -13,6 +13,7 @@ vi.mock('@/store/config', async () => {
     engine: 'classic',
     filter: [] as string[],
     language: 'zh',
+    weekday_source: 'bgm',
   };
   return {
     __parserState: parserState,
@@ -35,24 +36,34 @@ const AbSettingStub = defineComponent({
   template: '<div class="setting-stub"></div>',
 });
 
+function mountParser() {
+  return mount(ConfigParser, {
+    global: {
+      stubs: {
+        'ab-fold-panel': { template: '<section><slot /></section>' },
+        'ab-setting': AbSettingStub,
+      },
+    },
+  });
+}
+
+function findSetting(
+  wrapper: ReturnType<typeof mountParser>,
+  labelKey: string
+) {
+  const setting = wrapper.findAllComponents(AbSettingStub).find((item) => {
+    const label = item.props('label') as () => string;
+    return label() === labelKey;
+  });
+  if (!setting) throw new Error(`setting not found: ${labelKey}`);
+  return setting;
+}
+
 describe('config-parser', () => {
   it('shows both parser engines and defaults to Classic', async () => {
-    const wrapper = mount(ConfigParser, {
-      global: {
-        stubs: {
-          'ab-fold-panel': { template: '<section><slot /></section>' },
-          'ab-setting': AbSettingStub,
-        },
-      },
-    });
-    const settings = wrapper.findAllComponents(AbSettingStub);
-    const engine = settings.find((setting) => {
-      const label = setting.props('label') as () => string;
-      return label() === 'config.parser_set.engine';
-    });
+    const wrapper = mountParser();
+    const engine = findSetting(wrapper, 'config.parser_set.engine');
 
-    expect(engine).toBeDefined();
-    if (!engine) throw new Error('parser engine setting not found');
     expect(engine.props('data')).toBe('classic');
     expect(engine.props('description')).toBe('config.parser_set.engine_hint');
     expect(engine.props('prop')?.items).toEqual([
@@ -74,5 +85,34 @@ describe('config-parser', () => {
       __parserState: { engine: string };
     };
     expect(store.__parserState.engine).toBe('tokenizer');
+  });
+
+  it('shows both air-weekday sources and defaults to bgm.tv', async () => {
+    const wrapper = mountParser();
+    const source = findSetting(wrapper, 'config.parser_set.weekday_source');
+
+    expect(source.props('data')).toBe('bgm');
+    expect(source.props('description')).toBe(
+      'config.parser_set.weekday_source_hint'
+    );
+    expect(source.props('prop')?.items).toEqual([
+      {
+        id: 1,
+        label: 'config.parser_set.weekday_source_bgm',
+        value: 'bgm',
+      },
+      {
+        id: 2,
+        label: 'config.parser_set.weekday_source_parser',
+        value: 'parser',
+      },
+    ]);
+
+    await source.vm.$emit('update:data', 'parser');
+    await nextTick();
+    const store = (await import('@/store/config')) as unknown as {
+      __parserState: { weekday_source: string };
+    };
+    expect(store.__parserState.weekday_source).toBe('parser');
   });
 });
