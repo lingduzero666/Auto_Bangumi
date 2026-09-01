@@ -297,6 +297,8 @@ function handleConfirm() {
                   </button>
                 </div>
               </div>
+
+              <bangumi-preference-fields v-model:rule="localBangumi" />
             </div>
           </transition>
         </div>
