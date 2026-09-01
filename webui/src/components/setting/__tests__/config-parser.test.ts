@@ -14,6 +14,10 @@ vi.mock('@/store/config', async () => {
     filter: [] as string[],
     language: 'zh',
     weekday_source: 'bgm',
+    default_preferred_group: '',
+    default_preferred_resolution: '',
+    default_preferred_subtitle_language: '',
+    default_preferred_subtitle_style: '',
   };
   return {
     __parserState: parserState,
@@ -114,5 +118,75 @@ describe('config-parser', () => {
       __parserState: { weekday_source: string };
     };
     expect(store.__parserState.weekday_source).toBe('parser');
+  });
+
+  it('offers the four default preferences, all unset by default', async () => {
+    const wrapper = mountParser();
+
+    for (const key of [
+      'config.parser_set.default_preferred_group',
+      'config.parser_set.default_preferred_resolution',
+      'config.parser_set.default_preferred_subtitle_language',
+      'config.parser_set.default_preferred_subtitle_style',
+    ]) {
+      // 默认留空＝不设默认偏好，保持下载全部版本的既有行为
+      expect(findSetting(wrapper, key).props('data')).toBe('');
+    }
+
+    // 两个字幕维度是规范化枚举，第一项为「不限」（空串）
+    const language = findSetting(
+      wrapper,
+      'config.parser_set.default_preferred_subtitle_language'
+    );
+    expect(language.props('prop')?.items).toEqual([
+      { id: 0, label: 'config.parser_set.preference_unset', value: '' },
+      { id: 1, label: 'config.parser_set.subtitle_language_chs', value: 'chs' },
+      { id: 2, label: 'config.parser_set.subtitle_language_cht', value: 'cht' },
+      {
+        id: 3,
+        label: 'config.parser_set.subtitle_language_chs_cht',
+        value: 'chs_cht',
+      },
+      { id: 4, label: 'config.parser_set.subtitle_language_jpn', value: 'jpn' },
+      { id: 5, label: 'config.parser_set.subtitle_language_eng', value: 'eng' },
+    ]);
+
+    const style = findSetting(
+      wrapper,
+      'config.parser_set.default_preferred_subtitle_style'
+    );
+    expect(style.props('prop')?.items).toEqual([
+      { id: 0, label: 'config.parser_set.preference_unset', value: '' },
+      {
+        id: 1,
+        label: 'config.parser_set.subtitle_style_embedded',
+        value: 'embedded',
+      },
+      {
+        id: 2,
+        label: 'config.parser_set.subtitle_style_muxed',
+        value: 'muxed',
+      },
+      {
+        id: 3,
+        label: 'config.parser_set.subtitle_style_external',
+        value: 'external',
+      },
+    ]);
+  });
+
+  it('writes a chosen subtitle language back to the config store', async () => {
+    const wrapper = mountParser();
+    const language = findSetting(
+      wrapper,
+      'config.parser_set.default_preferred_subtitle_language'
+    );
+
+    await language.vm.$emit('update:data', 'chs');
+    await nextTick();
+    const store = (await import('@/store/config')) as unknown as {
+      __parserState: { default_preferred_subtitle_language: string };
+    };
+    expect(store.__parserState.default_preferred_subtitle_language).toBe('chs');
   });
 });

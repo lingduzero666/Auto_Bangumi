@@ -26,6 +26,7 @@ from module.parser.analyser.tokenizer import (
     ParsedRelease,
 )
 from module.parser.release_policy import preference_identity, preference_revision
+from module.parser.subtitle_tags import release_subtitle_tags
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,11 @@ def _resolution_matches(candidate: str | None, preferred: str | None) -> bool:
 
 
 def _preference_score(release: ParsedRelease, bangumi: Bangumi) -> int:
-    """候选版本相对番剧发布组/分辨率偏好的匹配得分：每命中一项 +1。"""
+    """候选版本相对番剧各项偏好的匹配得分：每命中一项 +1。
+
+    四项偏好（字幕组/分辨率/字幕语言/字幕压制）等权：用户填了几项，就用
+    几项来分高下。字幕标签只在确实设了相关偏好时才解析，省掉无谓的正则。
+    """
     score = 0
     if bangumi.preferred_group and _groups_are_similar(
         release.group, bangumi.preferred_group
@@ -57,6 +62,18 @@ def _preference_score(release: ParsedRelease, bangumi: Bangumi) -> int:
         release.resolution, bangumi.preferred_resolution
     ):
         score += 1
+    if bangumi.preferred_subtitle_language or bangumi.preferred_subtitle_style:
+        language, style = release_subtitle_tags(release)
+        if (
+            bangumi.preferred_subtitle_language
+            and language == bangumi.preferred_subtitle_language
+        ):
+            score += 1
+        if (
+            bangumi.preferred_subtitle_style
+            and style == bangumi.preferred_subtitle_style
+        ):
+            score += 1
     return score
 
 
@@ -200,7 +217,8 @@ class RSSEngine:
     ) -> set[int]:
         """按番剧的发布组/分辨率偏好去重：同一集只保留最匹配偏好的版本。
 
-        只影响设置了 ``preferred_group`` 或 ``preferred_resolution`` 的番剧；
+        只影响设置了 ``preferred_group``、``preferred_resolution``、
+        ``preferred_subtitle_language`` 或 ``preferred_subtitle_style`` 的番剧；
         未设置偏好的番剧完全不受影响（沿用旧行为，多字幕组各自下载全部集数）。
 
         规则：
@@ -320,12 +338,19 @@ class RSSEngine:
         bangumi_list = await self.db.bangumi.search_all()
         events: list[SystemEvent] = []
 
-        # Bangumi with a release-group/resolution preference need per-episode
-        # dedup; everyone else keeps the old "download every match" behavior.
+        # Bangumi with any release preference (group / resolution / subtitle
+        # language / subtitle style) need per-episode dedup; everyone else
+        # keeps the old "download every match" behavior.
         preference_bangumi = {
             b.id: b
             for b in bangumi_list
-            if b.id is not None and (b.preferred_group or b.preferred_resolution)
+            if b.id is not None
+            and (
+                b.preferred_group
+                or b.preferred_resolution
+                or b.preferred_subtitle_language
+                or b.preferred_subtitle_style
+            )
         }
         existing_downloaded: dict[int, list[Torrent]] = {}
         if preference_bangumi:

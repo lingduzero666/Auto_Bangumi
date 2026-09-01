@@ -29,6 +29,8 @@ export interface BangumiRule {
   needs_review_reason: string | null;
   preferred_group: string | null;
   preferred_resolution: string | null;
+  preferred_subtitle_language: string | null;
+  preferred_subtitle_style: string | null;
   episode_type: 'episode' | 'movie' | 'special';
 }
 
@@ -72,6 +74,8 @@ export const ruleTemplate: BangumiRule = {
   needs_review_reason: null,
   preferred_group: null,
   preferred_resolution: null,
+  preferred_subtitle_language: null,
+  preferred_subtitle_style: null,
   episode_type: 'episode',
 };
 

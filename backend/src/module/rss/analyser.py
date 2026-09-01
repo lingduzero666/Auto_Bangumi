@@ -14,6 +14,32 @@ from .engine import RSSEngine
 logger = logging.getLogger(__name__)
 
 
+def apply_default_preferences(bangumi: Bangumi) -> None:
+    """给新解析出的番剧套上「解析设置」里的全局默认偏好。
+
+    默认值只在番剧首次入库这一刻生效：写进番剧行之后就归该行所有，之后改
+    全局设置不会回头改它——和 ``group_name`` / ``subtitle`` 这些解析出来就
+    固化的字段一个道理，避免用户逐番调好的偏好被一次全局改动冲掉。
+
+    只填空字段，调用方（如搜索页预览）已经定好的值优先。空字符串统一写成
+    ``None``，让「没设置」在库里只有 NULL 一种表示。全局默认全留空时这个
+    函数什么都不做，行为与升级前完全一致。
+    """
+    defaults = settings.rss_parser
+    if not bangumi.preferred_group:
+        bangumi.preferred_group = defaults.default_preferred_group or None
+    if not bangumi.preferred_resolution:
+        bangumi.preferred_resolution = defaults.default_preferred_resolution or None
+    if not bangumi.preferred_subtitle_language:
+        bangumi.preferred_subtitle_language = (
+            defaults.default_preferred_subtitle_language or None
+        )
+    if not bangumi.preferred_subtitle_style:
+        bangumi.preferred_subtitle_style = (
+            defaults.default_preferred_subtitle_style or None
+        )
+
+
 class RSSAnalyser:
     async def official_title_parser_movie(
         self,
@@ -187,6 +213,7 @@ class RSSAnalyser:
                     bangumi=result, rss=rss, torrent=torrent
                 )
                 result.rss_link = rss.url
+                apply_default_preferences(result)
                 if not full_parse:
                     return [result], new_movies
                 seen_identities.add(identity)
@@ -215,6 +242,7 @@ class RSSAnalyser:
                     fetch_poster=fetch_poster,
                 )
                 result.rss_link = rss.url
+                apply_default_preferences(result)
             return result
         return None
 

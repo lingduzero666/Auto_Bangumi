@@ -25,6 +25,10 @@ DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
         "language": "zh",
         "engine": "classic",
         "weekday_source": "bgm",
+        "default_preferred_group": "",
+        "default_preferred_resolution": "",
+        "default_preferred_subtitle_language": "",
+        "default_preferred_subtitle_style": "",
     },
     "bangumi_manage": {
         "enable": True,
@@ -105,6 +109,16 @@ ENV_TO_ATTR: dict[str, dict[str, Any]] = {
         "AB_LANGUAGE": "language",
         "AB_RSS_PARSER_ENGINE": ("engine", lambda e: e.lower()),
         "AB_WEEKDAY_SOURCE": ("weekday_source", lambda e: e.lower()),
+        "AB_DEFAULT_PREFERRED_GROUP": "default_preferred_group",
+        "AB_DEFAULT_PREFERRED_RESOLUTION": "default_preferred_resolution",
+        "AB_DEFAULT_PREFERRED_SUBTITLE_LANGUAGE": (
+            "default_preferred_subtitle_language",
+            lambda e: e.lower(),
+        ),
+        "AB_DEFAULT_PREFERRED_SUBTITLE_STYLE": (
+            "default_preferred_subtitle_style",
+            lambda e: e.lower(),
+        ),
     },
     "bangumi_manage": {
         "AB_RENAME": ("enable", lambda e: e.lower() in ("true", "1", "t")),

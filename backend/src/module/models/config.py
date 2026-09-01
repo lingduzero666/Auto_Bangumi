@@ -57,6 +57,28 @@ class RSSParser(BaseModel):
     enable: bool = Field(default=True, description="Enable RSS parser")
     filter: list[str] = Field(default=["720", r"\d+-\d+"], description="Filter")
     language: str = "zh"
+    # 新番剧首次入库时写进番剧行的偏好起点。默认全空＝不开启同集去重，
+    # 与升级前行为一致；之后改这里只影响新发现的番剧，已入库的不动。
+    default_preferred_group: str = Field(
+        default="", description="Default preferred release group for new anime"
+    )
+    default_preferred_resolution: str = Field(
+        default="", description="Default preferred resolution for new anime"
+    )
+    default_preferred_subtitle_language: str = Field(
+        default="",
+        description=(
+            "Default preferred subtitle language for new anime "
+            "(chs / cht / chs_cht / jpn / eng)"
+        ),
+    )
+    default_preferred_subtitle_style: str = Field(
+        default="",
+        description=(
+            "Default preferred subtitle style for new anime "
+            "(embedded / muxed / external)"
+        ),
+    )
     engine: Literal["classic", "tokenizer"] = Field(
         default="classic",
         description="Title parser engine (classic or tokenizer Preview)",

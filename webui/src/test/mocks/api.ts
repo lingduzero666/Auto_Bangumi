@@ -52,6 +52,8 @@ export const mockBangumiAPI: BangumiAPI = {
   needs_review_reason: null,
   preferred_group: null,
   preferred_resolution: null,
+  preferred_subtitle_language: null,
+  preferred_subtitle_style: null,
   episode_type: 'episode',
 };
 
@@ -131,6 +133,10 @@ export const mockConfig = {
     filter: ['720', '\\d+-\\d'],
     language: 'zh',
     weekday_source: 'bgm',
+    default_preferred_group: '',
+    default_preferred_resolution: '',
+    default_preferred_subtitle_language: '',
+    default_preferred_subtitle_style: '',
   },
   bangumi_manage: {
     enable: true,

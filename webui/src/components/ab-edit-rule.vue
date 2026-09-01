@@ -91,6 +91,22 @@ const resolutionOptions = ['2160p', '1080p', '720p'].map((r) => ({
   value: r,
 }));
 
+// 字幕语言/压制是规范化枚举，不开放自由输入：后端按归一后的值匹配，
+// 手填的字符串（如「简中」）落不到任何一个枚举上，只会静默失效。
+const subtitleLanguageOptions = computed(() => [
+  { label: t('homepage.rule.subtitle_language_chs'), value: 'chs' },
+  { label: t('homepage.rule.subtitle_language_cht'), value: 'cht' },
+  { label: t('homepage.rule.subtitle_language_chs_cht'), value: 'chs_cht' },
+  { label: t('homepage.rule.subtitle_language_jpn'), value: 'jpn' },
+  { label: t('homepage.rule.subtitle_language_eng'), value: 'eng' },
+]);
+
+const subtitleStyleOptions = computed(() => [
+  { label: t('homepage.rule.subtitle_style_embedded'), value: 'embedded' },
+  { label: t('homepage.rule.subtitle_style_muxed'), value: 'muxed' },
+  { label: t('homepage.rule.subtitle_style_external'), value: 'external' },
+]);
+
 const selectMenuProps = { role: 'listbox' } as const;
 
 function selectOptionNodeProps() {
@@ -365,6 +381,44 @@ function emitUnarchive() {
             size="small"
             :placeholder="$t('homepage.rule.auto_detect')"
             :aria-label="$t('homepage.rule.preferred_resolution')"
+            class="weekday-select"
+          />
+        </div>
+
+        <div class="weekday-row">
+          <label class="weekday-label">{{
+            $t('homepage.rule.preferred_subtitle_language')
+          }}</label>
+          <NSelect
+            v-model:value="localRule.preferred_subtitle_language"
+            :options="subtitleLanguageOptions"
+            role="combobox"
+            aria-haspopup="listbox"
+            :menu-props="selectMenuProps"
+            :node-props="selectOptionNodeProps"
+            clearable
+            size="small"
+            :placeholder="$t('homepage.rule.auto_detect')"
+            :aria-label="$t('homepage.rule.preferred_subtitle_language')"
+            class="weekday-select"
+          />
+        </div>
+
+        <div class="weekday-row">
+          <label class="weekday-label">{{
+            $t('homepage.rule.preferred_subtitle_style')
+          }}</label>
+          <NSelect
+            v-model:value="localRule.preferred_subtitle_style"
+            :options="subtitleStyleOptions"
+            role="combobox"
+            aria-haspopup="listbox"
+            :menu-props="selectMenuProps"
+            :node-props="selectOptionNodeProps"
+            clearable
+            size="small"
+            :placeholder="$t('homepage.rule.auto_detect')"
+            :aria-label="$t('homepage.rule.preferred_subtitle_style')"
             class="weekday-select"
           />
         </div>

@@ -1252,6 +1252,105 @@ class TestPreferenceDedup:
         assert id(other_v9) in skips
         assert id(preferred_v1) not in skips
 
+    async def test_subtitle_language_and_style_dedup_same_group(self, rss_engine):
+        """同组同分辨率、只有字幕语言/压制不同的三个版本，只留最贴合偏好的。
+
+        这正是 Mikan 聚合订阅里一集三版（简繁内封 / 繁体内嵌 / 简体内嵌）
+        导致重命名冲突的场景：字幕组和分辨率都相同，光靠这两项分不出高下。
+        """
+        bangumi = make_bangumi(
+            title_raw="Super no Ura de Yani Suu Futari",
+            filter="",
+            id=1,
+            preferred_subtitle_language="chs",
+            preferred_subtitle_style="embedded",
+        )
+        muxed_both = make_torrent(
+            name="[桜都字幕组] Super no Ura de Yani Suu Futari [08][1080P][简繁内封]"
+        )
+        embedded_cht = make_torrent(
+            name="[桜都字幕组] Super no Ura de Yani Suu Futari [08][1080P][繁体内嵌]"
+        )
+        embedded_chs = make_torrent(
+            name="[桜都字幕组] Super no Ura de Yani Suu Futari [08][1080P][简体内嵌]"
+        )
+
+        skips = RSSEngine._select_preference_skips(
+            [
+                (muxed_both, bangumi),
+                (embedded_cht, bangumi),
+                (embedded_chs, bangumi),
+            ],
+            preference_bangumi={1: bangumi},
+            existing_downloaded={},
+        )
+
+        assert id(embedded_chs) not in skips
+        assert id(embedded_cht) in skips
+        assert id(muxed_both) in skips
+
+    async def test_subtitle_language_alone_dedups(self, rss_engine):
+        """只设语言偏好也能去重，压制维度留空不参与打分。"""
+        bangumi = make_bangumi(
+            title_raw="Mushoku Tensei",
+            filter="",
+            id=1,
+            preferred_subtitle_language="cht",
+        )
+        preferred = make_torrent(name="[GroupA] Mushoku Tensei - 12 [1080p][繁体内嵌]")
+        other = make_torrent(name="[GroupA] Mushoku Tensei - 12 [1080p][简体内嵌]")
+
+        skips = RSSEngine._select_preference_skips(
+            [(preferred, bangumi), (other, bangumi)],
+            preference_bangumi={1: bangumi},
+            existing_downloaded={},
+        )
+
+        assert id(other) in skips
+        assert id(preferred) not in skips
+
+    async def test_subtitle_preference_combines_with_group_preference(self, rss_engine):
+        """四项偏好等权相加：命中两项的版本胜过只命中一项的。"""
+        bangumi = make_bangumi(
+            title_raw="Mushoku Tensei",
+            filter="",
+            id=1,
+            preferred_group="GroupA",
+            preferred_subtitle_language="chs",
+        )
+        both = make_torrent(name="[GroupA] Mushoku Tensei - 12 [1080p][简体内嵌]")
+        group_only = make_torrent(name="[GroupA] Mushoku Tensei - 12 [1080p][繁体内嵌]")
+
+        skips = RSSEngine._select_preference_skips(
+            [(both, bangumi), (group_only, bangumi)],
+            preference_bangumi={1: bangumi},
+            existing_downloaded={},
+        )
+
+        assert id(group_only) in skips
+        assert id(both) not in skips
+
+    async def test_unrecognized_subtitle_tag_scores_zero_but_keeps_one(
+        self, rss_engine
+    ):
+        """字幕标签认不出时得分为 0，同批次仍只保留一个，不会漏下整集。"""
+        bangumi = make_bangumi(
+            title_raw="Mushoku Tensei",
+            filter="",
+            id=1,
+            preferred_subtitle_language="chs",
+        )
+        unknown_a = make_torrent(name="[GroupA] Mushoku Tensei - 12 [1080p].mkv")
+        unknown_b = make_torrent(name="[GroupB] Mushoku Tensei - 12 [1080p].mkv")
+
+        skips = RSSEngine._select_preference_skips(
+            [(unknown_a, bangumi), (unknown_b, bangumi)],
+            preference_bangumi={1: bangumi},
+            existing_downloaded={},
+        )
+
+        assert len(skips) == 1
+
 
 class TestRefreshRssPreferenceDedup:
     """Integration coverage through refresh_rss end to end."""
