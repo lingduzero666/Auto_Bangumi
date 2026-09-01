@@ -57,6 +57,7 @@ declare module '@vue/runtime-core' {
     BangumiFilterField: typeof import('./../../src/components/bangumi-filter-field.vue')['default']
     BangumiInfoTags: typeof import('./../../src/components/bangumi-info-tags.vue')['default']
     BangumiOffsetField: typeof import('./../../src/components/bangumi-offset-field.vue')['default']
+    BangumiPreferenceFields: typeof import('./../../src/components/bangumi-preference-fields.vue')['default']
     BangumiPreview: typeof import('./../../src/components/bangumi-preview.vue')['default']
     BangumiRssLinkRow: typeof import('./../../src/components/bangumi-rss-link-row.vue')['default']
     CalendarBoard: typeof import('./../../src/components/calendar/calendar-board.vue')['default']

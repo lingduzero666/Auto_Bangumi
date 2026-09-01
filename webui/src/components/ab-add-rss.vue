@@ -235,6 +235,8 @@ function subscribe() {
         <div v-if="offsetReason" class="offset-reason">
           {{ offsetReason }}
         </div>
+
+        <bangumi-preference-fields v-model:rule="rule" />
       </advanced-section>
     </div>
 
