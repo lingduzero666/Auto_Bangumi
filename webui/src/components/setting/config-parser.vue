@@ -126,7 +126,6 @@ const items: SettingItem<RssParser>[] = [
       <ab-setting
         v-model:data="parser.default_preferred_group"
         :label="() => t('config.parser_set.default_preferred_group')"
-        :description="t('config.parser_set.preference_hint')"
         type="input"
         :prop="{ placeholder: 'ANi' }"
       ></ab-setting>
