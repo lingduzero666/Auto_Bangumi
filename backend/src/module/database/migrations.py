@@ -71,9 +71,31 @@ def index_exists(table: str, index: str) -> AppliedCheck:
     return check
 
 
+def table_missing(table: str) -> AppliedCheck:
+    """表根本不存在＝这条迁移无需执行。
+
+    只含 auth schema 的库（auth beta v20 的升级路径，见
+    ``_make_v19_auth_engine``）里没有 bangumi 表，对它 ALTER 只会让整个升级
+    失败。这类库缺的表随后由 ``create_all`` 按完整模型建出来，本来就带着新
+    列，跳过才是正确结果。
+    """
+
+    def check(inspector) -> bool:
+        return table not in inspector.get_table_names()
+
+    return check
+
+
 def all_checks(*checks: AppliedCheck) -> AppliedCheck:
     def check(inspector) -> bool:
         return all(item(inspector) for item in checks)
+
+    return check
+
+
+def any_checks(*checks: AppliedCheck) -> AppliedCheck:
+    def check(inspector) -> bool:
+        return any(item(inspector) for item in checks)
 
     return check
 
@@ -778,6 +800,40 @@ MIGRATIONS: tuple[Migration, ...] = (
             (
                 "ALTER TABLE aria2_gid ADD COLUMN rename_intent TEXT DEFAULT NULL",
                 column_exists("aria2_gid", "rename_intent"),
+            ),
+        ),
+    ),
+    Migration(
+        25,
+        "add preferred subtitle language/style columns to bangumi",
+        (
+            "ALTER TABLE bangumi ADD COLUMN preferred_subtitle_language "
+            "TEXT DEFAULT NULL",
+            "ALTER TABLE bangumi ADD COLUMN preferred_subtitle_style TEXT DEFAULT NULL",
+        ),
+        any_checks(
+            table_missing("bangumi"),
+            all_checks(
+                column_exists("bangumi", "preferred_subtitle_language"),
+                column_exists("bangumi", "preferred_subtitle_style"),
+            ),
+        ),
+        (
+            (
+                "ALTER TABLE bangumi ADD COLUMN preferred_subtitle_language "
+                "TEXT DEFAULT NULL",
+                any_checks(
+                    table_missing("bangumi"),
+                    column_exists("bangumi", "preferred_subtitle_language"),
+                ),
+            ),
+            (
+                "ALTER TABLE bangumi ADD COLUMN preferred_subtitle_style "
+                "TEXT DEFAULT NULL",
+                any_checks(
+                    table_missing("bangumi"),
+                    column_exists("bangumi", "preferred_subtitle_style"),
+                ),
             ),
         ),
     ),

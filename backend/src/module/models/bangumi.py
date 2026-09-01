@@ -58,6 +58,12 @@ class Bangumi(SQLModel, table=True):
     preferred_resolution: Optional[str] = Field(
         default=None, alias="preferred_resolution", title="偏好分辨率"
     )
+    preferred_subtitle_language: Optional[str] = Field(
+        default=None, alias="preferred_subtitle_language", title="偏好字幕语言"
+    )
+    preferred_subtitle_style: Optional[str] = Field(
+        default=None, alias="preferred_subtitle_style", title="偏好字幕压制"
+    )
     episode_type: str = Field(
         default="episode", alias="episode_type", title="剧集类型"
     )  # "episode" | "movie" | "special"
@@ -104,6 +110,12 @@ class BangumiUpdate(SQLModel):
     )
     preferred_resolution: Optional[str] = Field(
         default=None, alias="preferred_resolution", title="偏好分辨率"
+    )
+    preferred_subtitle_language: Optional[str] = Field(
+        default=None, alias="preferred_subtitle_language", title="偏好字幕语言"
+    )
+    preferred_subtitle_style: Optional[str] = Field(
+        default=None, alias="preferred_subtitle_style", title="偏好字幕压制"
     )
     episode_type: str = Field(
         default="episode", alias="episode_type", title="剧集类型"
