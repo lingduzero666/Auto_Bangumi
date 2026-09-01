@@ -6,6 +6,10 @@ export type DownloaderType = ['qbittorrent', 'aria2'];
 export type RssParserLang = ['zh', 'en', 'jp'];
 /** RSS 标题解析引擎（tokenizer 仍处于 Preview） */
 export type RssParserEngine = ['classic', 'tokenizer'];
+/** 偏好字幕语言，空串表示不限 */
+export type SubtitleLanguage = ['chs', 'cht', 'chs_cht', 'jpn', 'eng'];
+/** 偏好字幕压制方式，空串表示不限 */
+export type SubtitleStyle = ['embedded', 'muxed', 'external'];
 /** 重命名方式 */
 export type RenameMethod = ['normal', 'pn', 'advance', 'none'];
 /** 修订版文件名冲突处理策略 */
@@ -56,7 +60,13 @@ export interface RssParser {
   enable: boolean;
   engine: TupleToUnion<RssParserEngine>;
   filter: Array<string>;
+  /** TMDB 元数据语言，决定番剧官方标题用哪种语言，与字幕语言无关 */
   language: TupleToUnion<RssParserLang>;
+  /** 以下四项是新番剧首次入库时写进番剧行的偏好起点，空串＝不设默认 */
+  default_preferred_group: string;
+  default_preferred_resolution: string;
+  default_preferred_subtitle_language: TupleToUnion<SubtitleLanguage> | '';
+  default_preferred_subtitle_style: TupleToUnion<SubtitleStyle> | '';
 }
 export interface BangumiManage {
   enable: boolean;
@@ -198,6 +208,10 @@ export const initConfig: Config = {
     engine: 'classic',
     filter: [],
     language: 'zh',
+    default_preferred_group: '',
+    default_preferred_resolution: '',
+    default_preferred_subtitle_language: '',
+    default_preferred_subtitle_style: '',
   },
   bangumi_manage: {
     enable: true,
