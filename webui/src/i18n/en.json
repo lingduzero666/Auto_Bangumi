@@ -139,7 +139,7 @@
       "weekday_source": "Air Weekday Source",
       "weekday_source_bgm": "Bangumi.tv first",
       "weekday_source_parser": "Parsers first",
-      "weekday_source_hint": "Which source is queried first for the calendar air weekday; the other one still serves as a fallback for anime the preferred source cannot resolve. Parsers follow each subscription's own parser type: mikan / mix read the air day off the Mikan bangumi page, tmdb derives it from air dates, other types have no parser source. Prefer parsers when bgm.tv is unreachable."
+      "weekday_source_hint": "Falls back to the other source when the preferred one returns nothing. The mikan and mix parsers use the air day from Mikan, tmdb derives it from air dates, and other parser types cannot provide an air weekday, so they always fall back."
     },
     "proxy_set": {
       "enable": "Enable",
