@@ -451,6 +451,21 @@ class RenameOperationDatabase:
         await self.session.commit()
         return True
 
+    async def delete_by_bangumi_id(self, bangumi_id: int) -> int:
+        """删除某番剧的全部重命名记录。
+
+        番剧连同种子一起删掉后这些行只剩垃圾价值：它们占着身份索引，还会
+        让冲突列表指向一个已经不存在的番剧。重新添加同一部番时是否重跑改名
+        由 ``get_or_create`` 的陈旧判定负责，这里纯粹是回收。
+        """
+        result = await self.session.execute(
+            delete(RenameOperation)
+            .where(col(RenameOperation.bangumi_id) == bangumi_id)
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.commit()
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
+
     async def prune_done(self, before: datetime) -> int:
         result = await self.session.execute(
             delete(RenameOperation)

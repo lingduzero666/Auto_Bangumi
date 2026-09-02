@@ -152,6 +152,33 @@ async def test_bangumi_delete_all_with_fk_references_succeeds(db_session):
     assert gid_row.bangumi_id is None
 
 
+async def test_bangumi_delete_all_reclaims_rename_operations(db_session):
+    """整表重置同样回收重命名记录，否则它们会留到 prune_done 的 30 天兜底。"""
+    from sqlmodel import select as sql_select
+
+    from module.models import RenameOperation
+
+    await _ensure_bangumi(db_session, 1)
+    db_session.add(
+        RenameOperation(
+            downloader_type="qbittorrent",
+            kind="conflict",
+            state="done",
+            new_task_id="hash-1",
+            save_path="/downloads/Anime/Season 1",
+            source_path="raw.mkv",
+            target_path="Anime S01E01.mkv",
+            bangumi_id=1,
+        )
+    )
+    await db_session.commit()
+
+    await BangumiDatabase(db_session).delete_all()
+
+    rows = (await db_session.execute(sql_select(RenameOperation))).scalars().all()
+    assert rows == []
+
+
 # ---------------------------------------------------------------------------
 # TorrentDatabase qb_hash methods
 # ---------------------------------------------------------------------------
