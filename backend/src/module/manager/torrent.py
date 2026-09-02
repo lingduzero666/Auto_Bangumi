@@ -85,6 +85,8 @@ class TorrentManager:
         if isinstance(data, Bangumi):
             # Clean up torrent records so re-adding the same anime can re-download
             await self.db.torrent.delete_by_bangumi_id(int(_id))
+            # 同理回收重命名记录，否则它们会一直留到 prune_done 的 30 天兜底
+            await self.db.rename_operation.delete_by_bangumi_id(int(_id))
             await self.db.bangumi.delete_one(int(_id))
             # 番剧删除后停用其独立订阅的孤儿 RSS；聚合订阅不受影响
             await self._disable_orphan_sub_rss(data)

@@ -81,7 +81,7 @@ class RenameOperationDatabase:
 
     @staticmethod
     def _is_stale_completion(
-        row: RenameOperation, stale_before: datetime | None
+        row: RenameOperation | None, stale_before: datetime | None
     ) -> bool:
         """已完成的行是否属于「上一次」的同名任务。
 
@@ -94,10 +94,10 @@ class RenameOperationDatabase:
         却一个字节都没改，且该标签是终态标记，``rename()`` 从此永远跳过它。
 
         用任务的加入时间区分两者：完成时间早于任务加入，这一行只能属于上
-        一轮。``stale_before`` 为空（调用方拿不到加入时间）时一律不判陈旧，
-        维持既有行为。
+        一轮。``row`` 为空（身份行还不存在）或 ``stale_before`` 为空（调用方
+        拿不到加入时间）时一律不判陈旧，维持既有行为。
         """
-        if stale_before is None or row.state != "done":
+        if row is None or stale_before is None or row.state != "done":
             return False
         completed_at = _as_utc(row.updated_at)
         started_at = _as_utc(stale_before)
@@ -450,6 +450,21 @@ class RenameOperationDatabase:
         await self.session.delete(row)
         await self.session.commit()
         return True
+
+    async def delete_by_bangumi_id(self, bangumi_id: int) -> int:
+        """删除某番剧的全部重命名记录。
+
+        番剧连同种子一起删掉后这些行只剩垃圾价值：它们占着身份索引，还会
+        让冲突列表指向一个已经不存在的番剧。重新添加同一部番时是否重跑改名
+        由 ``get_or_create`` 的陈旧判定负责，这里纯粹是回收。
+        """
+        result = await self.session.execute(
+            delete(RenameOperation)
+            .where(col(RenameOperation.bangumi_id) == bangumi_id)
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.commit()
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def prune_done(self, before: datetime) -> int:
         result = await self.session.execute(
