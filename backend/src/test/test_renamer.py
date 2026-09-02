@@ -1384,6 +1384,63 @@ class TestRevisionConflictFlow:
         assert operation is not None
         assert operation.state == "done"
 
+    async def test_redownloaded_torrent_is_renamed_despite_stale_done_row(
+        self, renamer, test_settings
+    ):
+        """删除番剧后重新添加同一种子，必须真的改名，而不是只打 ab:renamed。
+
+        重新下载会复现完全相同的身份五元组，上一轮的 done 行还在表里。若把
+        它当成既成事实，种子会被打上终态标记却一个字节都没改，此后
+        rename() 永远跳过它 —— 磁盘上就永远停在原始文件名。
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from module.database import Database
+        from module.models import RenameOperation
+
+        # 上一轮遗留：同一种子、同一目标名，已标记完成
+        completed_at = datetime.now(timezone.utc) - timedelta(days=1)
+        async with Database() as db:
+            db.session.add(
+                RenameOperation(
+                    downloader_type=renamer._downloader_type(),
+                    kind="conflict",
+                    state="done",
+                    new_task_id="new-v2",
+                    save_path=self.SAVE_PATH,
+                    source_path=self.V2,
+                    target_path=self.TARGET,
+                    created_at=completed_at,
+                    updated_at=completed_at,
+                )
+            )
+            await db.commit()
+
+        # 种子在那之后才被重新加入下载器，且磁盘上仍是原始文件名
+        info = dict(self._infos()[1])
+        info["added_on"] = int(
+            (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()
+        )
+        renamer.client.client.torrents_info.return_value = [info]
+        renamer.client.client.torrents_files.return_value = [{"name": self.V2}]
+        renamer.client.client.torrents_rename_file.return_value = RenameResult(
+            RenameOutcome.RENAMED
+        )
+        test_settings.bangumi_manage.rename_method = "pn"
+
+        with (
+            patch("module.manager.renamer.settings", test_settings),
+            patch.object(
+                renamer,
+                "_batch_lookup_offsets",
+                AsyncMock(return_value=self._offsets()),
+            ),
+        ):
+            notifications = await renamer.rename()
+
+        renamer.client.client.torrents_rename_file.assert_awaited_once()
+        assert len(notifications) == 1
+
     async def test_hold_conflict_is_persistent_and_notified_once(
         self, renamer, test_settings
     ):

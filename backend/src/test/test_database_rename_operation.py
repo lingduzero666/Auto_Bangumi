@@ -268,3 +268,80 @@ async def test_database_facade_exposes_rename_operation_repository(db_engine):
         row, created = await db.rename_operation.get_or_create(_operation())
         assert created is True
         assert await db.rename_operation.get(row.id) is not None
+
+
+class TestStaleCompletionIsNotHonoured:
+    """删除番剧后重新添加同一种子时，上一轮的 done 行不能当成既成事实。
+
+    身份五元组（下载器 / 任务 id / 保存路径 / 源文件名 / 目标名）会被完整
+    复现，而磁盘上是刚下回来的原始文件。沿用旧行会让种子被打上
+    ``ab:renamed`` 却一个字节都没改，且该标签是终态标记。
+    """
+
+    async def test_done_row_older_than_the_task_is_rebuilt(self, db_session):
+        repo = RenameOperationDatabase(db_session)
+        first, created = await repo.get_or_create(_operation(state="done"))
+        assert created is True
+
+        # 种子在这条记录完成之后才被重新加入下载器
+        re_added_at = _as_utc_updated(first) + timedelta(hours=1)
+        second, created = await repo.get_or_create(
+            _operation(state="retry"), stale_before=re_added_at
+        )
+
+        assert created is True, "陈旧的 done 行应被丢弃并重建"
+        assert second.state == "retry"
+        # 身份索引唯一，查回来的必须是重建后的那行而不是旧的 done
+        # （SQLite 会复用被删行的 id，所以不能按 id 断言）
+        remaining = await repo.get_by_identity(
+            downloader_type="qbittorrent",
+            new_task_id="new-v2",
+            save_path="/downloads/Anime/Season 1",
+            source_path="[ANi] Anime - 01 [V2].mp4",
+            target_path="Anime S01E01.mp4",
+        )
+        assert remaining is not None
+        assert remaining.state == "retry"
+
+    async def test_done_row_newer_than_the_task_still_wins(self, db_session):
+        """同一轮里的幂等保护必须保留：并发的第二个 renamer 仍应直接复用。"""
+        repo = RenameOperationDatabase(db_session)
+        first, _ = await repo.get_or_create(_operation(state="done"))
+
+        # 种子远早于这次改名加入，说明这条 done 属于本轮
+        added_long_ago = _as_utc_updated(first) - timedelta(hours=1)
+        second, created = await repo.get_or_create(
+            _operation(state="retry"), stale_before=added_long_ago
+        )
+
+        assert created is False
+        assert second.id == first.id
+        assert second.state == "done"
+
+    async def test_without_task_time_the_old_behaviour_is_kept(self, db_session):
+        """拿不到加入时间的下载器不做任何陈旧判断。"""
+        repo = RenameOperationDatabase(db_session)
+        first, _ = await repo.get_or_create(_operation(state="done"))
+        second, created = await repo.get_or_create(_operation(state="retry"))
+
+        assert created is False
+        assert second.id == first.id
+        assert second.state == "done"
+
+    async def test_unfinished_row_is_never_treated_as_stale(self, db_session):
+        """只有 done 行才可能陈旧；running/retry 行是活跃状态，必须复用。"""
+        repo = RenameOperationDatabase(db_session)
+        first, _ = await repo.get_or_create(_operation(state="running"))
+        second, created = await repo.get_or_create(
+            _operation(state="retry"),
+            stale_before=_as_utc_updated(first) + timedelta(hours=1),
+        )
+
+        assert created is False
+        assert second.id == first.id
+        assert second.state == "running"
+
+
+def _as_utc_updated(row) -> datetime:
+    value = row.updated_at
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)

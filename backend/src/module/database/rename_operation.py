@@ -1,6 +1,6 @@
 """Repository for durable rename/revision-replacement operations (#1078)."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, or_, update
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +18,15 @@ from module.models.rename_operation import (
 def _validate_state(state: str) -> None:
     if state not in RENAME_OPERATION_STATES:
         raise ValueError(f"Unsupported rename operation state: {state}")
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """SQLite 取回的时间戳没有时区，与 ``utc_now()`` 的 aware 值不能直接比较。"""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class RenameOperationDatabase:
@@ -70,8 +79,34 @@ class RenameOperationDatabase:
         result = await self.session.execute(statement)
         return result.scalars().first()
 
+    @staticmethod
+    def _is_stale_completion(
+        row: RenameOperation, stale_before: datetime | None
+    ) -> bool:
+        """已完成的行是否属于「上一次」的同名任务。
+
+        ``done`` 行平时承担幂等职责：同一轮里两个 renamer 撞上同一个种子时，
+        它让第二个直接返回 ``ALREADY_APPLIED``，避免重复改名与重复通知。
+
+        但删除番剧后重新添加会重新下载同一个种子，把身份五元组（下载器、
+        任务 id、保存路径、源文件名、目标名）一模一样地复现出来，而磁盘上
+        是刚下回来的原始文件。此时沿用旧行会让种子被打上 ``ab:renamed``
+        却一个字节都没改，且该标签是终态标记，``rename()`` 从此永远跳过它。
+
+        用任务的加入时间区分两者：完成时间早于任务加入，这一行只能属于上
+        一轮。``stale_before`` 为空（调用方拿不到加入时间）时一律不判陈旧，
+        维持既有行为。
+        """
+        if stale_before is None or row.state != "done":
+            return False
+        completed_at = _as_utc(row.updated_at)
+        started_at = _as_utc(stale_before)
+        if completed_at is None or started_at is None:
+            return False
+        return completed_at < started_at
+
     async def get_or_create(
-        self, operation: RenameOperation
+        self, operation: RenameOperation, *, stale_before: datetime | None = None
     ) -> tuple[RenameOperation, bool]:
         """Return the identity row, creating it when absent.
 
@@ -79,6 +114,9 @@ class RenameOperationDatabase:
         indexes remain authoritative for concurrent writers; an identity race
         is re-read after rollback, while an active-target collision is exposed
         as ``IntegrityError`` for the caller to reconcile.
+
+        ``stale_before`` 传入该任务的加入时间时，早于它完成的 ``done`` 行按
+        陈旧历史处理（丢弃重建），见 :meth:`_is_stale_completion`。
         """
 
         existing = await self.get_by_identity(
@@ -88,7 +126,8 @@ class RenameOperationDatabase:
             source_path=operation.source_path,
             target_path=operation.target_path,
         )
-        if existing is not None:
+        stale = existing if self._is_stale_completion(existing, stale_before) else None
+        if existing is not None and stale is None:
             return existing, False
 
         operation.created_at = operation.created_at or utc_now()
@@ -97,8 +136,12 @@ class RenameOperationDatabase:
             # Keep an active-target race inside a SAVEPOINT.  Rolling back the
             # whole session would expire unrelated rows already returned to the
             # caller and make a recoverable uniqueness conflict poison the
-            # surrounding operation.
+            # surrounding operation.  丢弃陈旧行与插入共用同一个 SAVEPOINT，
+            # 插入失败时不会留下「身份行已被删掉」的中间状态。
             async with self.session.begin_nested():
+                if stale is not None:
+                    await self.session.delete(stale)
+                    await self.session.flush()
                 self.session.add(operation)
                 await self.session.flush()
         except IntegrityError:
@@ -109,7 +152,9 @@ class RenameOperationDatabase:
                 source_path=operation.source_path,
                 target_path=operation.target_path,
             )
-            if existing is not None:
+            if existing is not None and not self._is_stale_completion(
+                existing, stale_before
+            ):
                 return existing, False
             raise
         await self.session.commit()
@@ -405,6 +450,21 @@ class RenameOperationDatabase:
         await self.session.delete(row)
         await self.session.commit()
         return True
+
+    async def delete_by_bangumi_id(self, bangumi_id: int) -> int:
+        """删除某番剧的全部重命名记录。
+
+        番剧连同种子一起删掉后这些行只剩垃圾价值：它们占着身份索引，还会
+        让冲突列表指向一个已经不存在的番剧。重新添加同一部番时是否重跑改名
+        由 ``get_or_create`` 的陈旧判定负责，这里纯粹是回收。
+        """
+        result = await self.session.execute(
+            delete(RenameOperation)
+            .where(col(RenameOperation.bangumi_id) == bangumi_id)
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.commit()
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def prune_done(self, before: datetime) -> int:
         result = await self.session.execute(

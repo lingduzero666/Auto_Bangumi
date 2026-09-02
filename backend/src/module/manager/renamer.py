@@ -668,6 +668,24 @@ class Renamer:
             value = value.replace(tzinfo=timezone.utc)
         return value <= datetime.now(timezone.utc)
 
+    @staticmethod
+    def _task_added_at(info: dict) -> datetime | None:
+        """任务加入下载器的时间，用于识别上一轮遗留的重命名记录。
+
+        种子被删除后重新添加会复现完全相同的身份五元组，只有加入时间能把
+        「这一轮的种子」和「上一轮留下的完成记录」区分开。下载器不提供该
+        字段时返回 None，此时 get_or_create 维持原有的幂等行为。
+        """
+        added_on = info.get("added_on")
+        if not isinstance(added_on, (int, float)) or isinstance(added_on, bool):
+            return None
+        if added_on <= 0:
+            return None
+        try:
+            return datetime.fromtimestamp(added_on, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+
     def _downloader_type(self) -> str:
         configured = settings.downloader.type
         downloader_type = (
@@ -1219,7 +1237,9 @@ class Renamer:
         )
         async with Database() as db:
             try:
-                row, _ = await db.rename_operation.get_or_create(operation)
+                row, _ = await db.rename_operation.get_or_create(
+                    operation, stale_before=self._task_added_at(info)
+                )
             except IntegrityError:
                 row = await db.rename_operation.get_by_target(
                     downloader_type=operation.downloader_type,
@@ -1350,7 +1370,9 @@ class Renamer:
                     )
                 if active is None:
                     try:
-                        active, _ = await db.rename_operation.get_or_create(template)
+                        active, _ = await db.rename_operation.get_or_create(
+                            template, stale_before=self._task_added_at(info)
+                        )
                     except IntegrityError:
                         active = await db.rename_operation.get_by_target(
                             downloader_type=template.downloader_type,

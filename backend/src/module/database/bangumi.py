@@ -562,12 +562,19 @@ class BangumiDatabase:
         # torrent / aria2_gid 行经外键引用 bangumi.id（PRAGMA foreign_keys=ON），
         # 必须先清理引用，否则整表重置在约束上直接回滚。种子记录随规则一起删
         # （与 delete_rule 语义一致，重新添加后能重新下载）；aria2 映射行保留
-        # 但解除关联。
+        # 但解除关联。rename_operation.bangumi_id 不是外键，清它纯粹是回收，
+        # 与 delete_rule 保持同一套语义。
         from module.models.aria2 import Aria2Gid
+        from module.models.rename_operation import RenameOperation
         from module.models.torrent import Torrent
 
         await self.session.execute(
             delete(Torrent).where(Torrent.bangumi_id.is_not(None))  # type: ignore[union-attr]
+        )
+        await self.session.execute(
+            delete(RenameOperation).where(
+                RenameOperation.bangumi_id.is_not(None)  # type: ignore[union-attr]
+            )
         )
         await self.session.execute(
             update(Aria2Gid)
